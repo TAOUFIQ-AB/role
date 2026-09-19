@@ -78,6 +78,7 @@ env:
   TIKTOK_HEADLESS: "true"
   PYTHONUNBUFFERED: "1"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  ONE_SHOT: ${{ github.event_name == 'push' && 'true' || 'false' }}
 
 jobs:
   hunt:
