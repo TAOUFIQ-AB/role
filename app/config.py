@@ -113,6 +113,9 @@ class Config:
     CONTROL_PANEL_UPLOAD_VIDEO: bool = os.environ.get(
         "CONTROL_PANEL_UPLOAD_VIDEO", "true"
     ).strip().lower() == "true"
+    CONTROL_PANEL_REVIEW_REQUIRED: bool = os.environ.get(
+        "CONTROL_PANEL_REVIEW_REQUIRED", "true"
+    ).strip().lower() == "true"
 
     # ── Telegram ───────────────────────────────────────────────────────────────
     TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -310,6 +313,7 @@ class Config:
             f"|  Provider order     : {', '.join(cls.AI_PROVIDER_ORDER)}",
             f"|  Metric fallback    : {cls.ENABLE_GEMINI_FALLBACK}",
             f"|  Control panel      : {cls.CONTROL_PANEL_URL or '(disabled)'}",
+            f"|  Human review gate  : {cls.CONTROL_PANEL_REVIEW_REQUIRED}",
             f"|  Fallback min views : {cls.FALLBACK_MIN_VIEWS:,}",
             f"|  Fallback min likes : {cls.FALLBACK_MIN_LIKES:,}",
             f"|  Telegram enabled   : {bool(cls.TELEGRAM_BOT_TOKEN and cls.TELEGRAM_CHAT_ID)}",
