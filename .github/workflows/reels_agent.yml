@@ -62,7 +62,7 @@ env:
   TARGET_REELS_SCAN: ${{ github.event_name == 'workflow_dispatch' && inputs.target_reels || '35' }}
   MAX_RUNTIME_SECONDS: "2400"
   SHUTDOWN_BUFFER_SECONDS: "90"
-  PLAYWRIGHT_HEADLESS: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_desktop && 'false' || 'true' }}
+  PLAYWRIGHT_HEADLESS: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.enable_desktop)) && 'false' || 'true' }}
   GEMINI_MODEL: "gemini-3.8-flash"
   GEMINI_MAX_DIM: "720"
   GEMINI_WEB_ENABLED: "true"
@@ -139,7 +139,7 @@ jobs:
         env:
           INSTAGRAM_SESSION_COOKIES: ${{ secrets.INSTAGRAM_SESSION_COOKIES }}
           XPRA_PASSWORD: ${{ secrets.XPRA_PASSWORD }}
-          DESKTOP_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_desktop && 'true' || 'false' }}
+          DESKTOP_REQUESTED: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.enable_desktop)) && 'true' || 'false' }}
         run: |
           python - <<'PY'
           import os
@@ -207,7 +207,7 @@ jobs:
           python .github/scripts/validate_instagram_cookies.py
 
       - name: Start optional password-protected desktop
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_desktop }}
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.enable_desktop) }}
         env:
           XPRA_PASSWORD_SECRET: ${{ secrets.XPRA_PASSWORD }}
         run: |
@@ -257,7 +257,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Start optional desktop tunnel
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_desktop }}
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.enable_desktop) }}
         continue-on-error: true
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
