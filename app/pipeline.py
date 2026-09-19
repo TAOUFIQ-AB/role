@@ -27,7 +27,8 @@ class ReelStatus(Enum):
     PENDING     = "pending"      # in scan queue, not yet deduped
     PROCESSING  = "processing"   # actively being worked on
     DOWNLOADED  = "downloaded"   # sent to Telegram successfully
-    SKIPPED     = "skipped"      # filtered out (views, vision, dedup)
+    REVIEW       = "review"       # waiting for human approval in dashboard
+    SKIPPED      = "skipped"      # filtered out (views, vision, dedup)
     FAILED      = "failed"       # terminal failure after max retries
     RETRY       = "retry"        # transient failure, eligible for retry
 
@@ -88,6 +89,11 @@ class ReelTask:
         self.status = ReelStatus.SKIPPED
         self.failure_reason = reason
         self.failure_kind = kind
+
+    def mark_review(self, reason: str = "Pending human review") -> None:
+        self.status = ReelStatus.REVIEW
+        self.failure_reason = reason
+        self.failure_kind = None
 
     def mark_downloaded(self, video_path: Path) -> None:
         self.status = ReelStatus.DOWNLOADED
