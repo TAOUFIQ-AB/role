@@ -1028,31 +1028,110 @@ class ReelCollector:
         drain_fn=None,
     ) -> List[str]:
         """
-        Discover Reels from Instagram keyword-search results.
+        Build a ranked GTA 6 video candidate pool from several Instagram searches.
 
-        Queries come from Config.INSTAGRAM_SEARCH_QUERIES. Only /reel/ or
-        /reels/ URLs are collected, so static /p/ search results are ignored.
+        Discovery is intentionally two-stage:
+          1. Oversample across multiple GTA 6 queries.
+          2. Rank + diversify the pool before the agent opens individual posts.
+
+        Reappearing in several different queries is treated as a strong relevance
+        signal. A per-query minimum keeps one broad search from dominating.
         """
-        seen: set[str] = set()
-        collected: List[str] = []
-
         queries = Config.INSTAGRAM_SEARCH_QUERIES or ["GTA 6"]
+        target = Config.TARGET_REELS_SCAN
+        pool_target = max(target, target * Config.SEARCH_POOL_MULTIPLIER)
+
+        candidates: Dict[str, dict] = {}
+        discovery_order = 0
+
         self.log.info(
-            "Search-first discovery: queries=%s target=%d",
+            "Ranked search discovery: queries=%s target=%d pool_target=%d",
             queries,
-            Config.TARGET_REELS_SCAN,
+            target,
+            pool_target,
         )
 
-        def _scrape_visible_reels() -> int:
-            """
-            Scrape visible search-result cards.
+        core_terms = (
+            "gta 6",
+            "gta6",
+            "gta vi",
+            "grand theft auto vi",
+            "grand theft auto 6",
+        )
+        entity_terms = (
+            "lucia",
+            "jason",
+            "vice city",
+            "leonida",
+            "rockstar",
+            "trailer 2",
+            "trailer",
+            "gameplay",
+        )
 
-            Instagram frequently represents videos/Reels in keyword search with
-            /p/{shortcode}/ links rather than /reel/{shortcode}/ links. Detect
-            video-ish cards from their descendants/labels and accept those /p/
-            links too.
-            """
-            before = len(collected)
+        def _card_evidence(link) -> tuple[str, bool]:
+            try:
+                data = link.evaluate(
+                    """el => {
+                        const bits = [
+                            el.getAttribute('aria-label') || '',
+                            el.getAttribute('title') || '',
+                            el.innerText || '',
+                            ...Array.from(el.querySelectorAll(
+                                'img[alt], [aria-label], [title], span'
+                            ))
+                            .slice(0, 40)
+                            .map(x => (
+                                x.getAttribute?.('alt') ||
+                                x.getAttribute?.('aria-label') ||
+                                x.getAttribute?.('title') ||
+                                x.textContent ||
+                                ''
+                            ))
+                        ];
+                        return {
+                            text: bits.join(' ').replace(/\s+/g, ' ').trim(),
+                            hasVideo: !!el.querySelector('video')
+                        };
+                    }"""
+                ) or {}
+                return str(data.get("text") or ""), bool(data.get("hasVideo"))
+            except Exception:
+                return "", False
+
+        def _score_card(query: str, evidence_text: str, url: str, index: int) -> float:
+            text = (evidence_text or "").lower()
+            score = 0.0
+
+            # Canonical reel links are slightly stronger than generic /p/ cards.
+            score += 7.0 if "/reel" in url else 4.0
+
+            if any(term in text for term in core_terms):
+                score += 12.0
+
+            matched_entities = sum(1 for term in entity_terms if term in text)
+            score += min(8.0, matched_entities * 2.0)
+
+            q = query.lower().strip()
+            if q and q in text:
+                score += 6.0
+            else:
+                query_tokens = [
+                    token for token in re.findall(r"[a-z0-9]+", q)
+                    if len(token) >= 3
+                ]
+                token_hits = sum(1 for token in query_tokens if token in text)
+                score += min(5.0, token_hits * 1.25)
+
+            # Earlier cards on the search grid receive a modest quality bonus,
+            # but not enough to overwhelm relevance/cross-query agreement.
+            score += max(0.0, 4.0 - (index * 0.18))
+            return score
+
+        def _scrape_visible_candidates(query: str, query_seen: set[str]) -> int:
+            nonlocal discovery_order
+
+            before = len(query_seen)
             try:
                 anchors = self._page.query_selector_all(
                     "main a[href*='/reel/'], main a[href*='/reels/'], main a[href*='/p/']"
@@ -1063,12 +1142,12 @@ class ReelCollector:
 
             sample_hrefs: List[str] = []
 
-            for link in anchors:
+            for index, link in enumerate(anchors):
                 try:
                     href = link.get_attribute("href") or ""
                     if not href:
                         continue
-                    if len(sample_hrefs) < 12:
+                    if len(sample_hrefs) < 10:
                         sample_hrefs.append(href)
 
                     full = (
@@ -1077,84 +1156,81 @@ class ReelCollector:
                         else href
                     )
                     full = full.split("?")[0].rstrip("/") + "/"
-                    if full in seen:
+
+                    reel_id = self.extract_reel_id(full)
+                    if not reel_id:
                         continue
 
-                    # Canonical Reel URLs are always video candidates.
+                    evidence_text, has_video = _card_evidence(link)
+
                     is_video_candidate = bool(
                         re.search(r"instagram\.com/reels?/[A-Za-z0-9_-]{8,}", full)
                     )
-
-                    # Search can expose Reel/video cards as /p/ links. Detect
-                    # video-specific overlay/icons/labels inside the grid card.
                     if not is_video_candidate and re.search(
                         r"instagram\.com/p/[A-Za-z0-9_-]{8,}", full
                     ):
-                        try:
-                            evidence = link.evaluate(
-                                """el => {
-                                    const text = [
-                                        el.getAttribute('aria-label') || '',
-                                        el.title || '',
-                                        el.innerText || '',
-                                        ...Array.from(el.querySelectorAll('[aria-label], svg, span'))
-                                            .slice(0, 30)
-                                            .map(x => (
-                                                x.getAttribute?.('aria-label') ||
-                                                x.getAttribute?.('title') ||
-                                                x.textContent ||
-                                                ''
-                                            ))
-                                    ].join(' ').toLowerCase();
-                                    return {
-                                        text,
-                                        hasVideo: !!el.querySelector('video'),
-                                    };
-                                }"""
-                            )
-                            marker_text = str((evidence or {}).get("text", "")).lower()
-                            is_video_candidate = bool((evidence or {}).get("hasVideo")) or any(
-                                token in marker_text
-                                for token in ("reel", "video", "clip", "play")
-                            )
-                        except Exception:
-                            is_video_candidate = False
+                        marker = evidence_text.lower()
+                        is_video_candidate = has_video or any(
+                            token in marker
+                            for token in ("reel", "video", "clip", "play")
+                        )
 
                     if not is_video_candidate:
                         continue
 
-                    seen.add(full)
-                    collected.append(full)
+                    # Repeated scroll exposure inside the same query is not new
+                    # evidence. Reappearance under a DIFFERENT query is.
+                    if full in query_seen:
+                        continue
+                    query_seen.add(full)
+
+                    card_score = _score_card(query, evidence_text, full, index)
+                    record = candidates.get(full)
+
+                    if record is None:
+                        discovery_order += 1
+                        record = {
+                            "url": full,
+                            "reel_id": reel_id,
+                            "queries": set(),
+                            "best_score": 0.0,
+                            "first_order": discovery_order,
+                            "evidence": "",
+                        }
+                        candidates[full] = record
+
+                    record["queries"].add(query)
+                    if card_score > record["best_score"]:
+                        record["best_score"] = card_score
+                        record["evidence"] = evidence_text[:400]
+
+                    agreement_bonus = max(0, len(record["queries"]) - 1) * 8.0
+                    ranked_score = record["best_score"] + agreement_bonus
+
                     self.log.info(
-                        "[%d/%d] Search video: %s (%s)",
-                        len(collected),
-                        Config.TARGET_REELS_SCAN,
-                        self.extract_reel_id(full),
-                        "/reel/" if "/reel" in full else "/p/",
+                        "Candidate %-12s score=%5.1f queries=%d source=%s",
+                        reel_id,
+                        ranked_score,
+                        len(record["queries"]),
+                        query,
                     )
-                    if len(collected) >= Config.TARGET_REELS_SCAN:
-                        break
 
                 except Exception as exc:
                     self.log.debug("Search result card read failed: %s", exc)
 
             if sample_hrefs:
-                self.log.info(
-                    "Search grid sample hrefs: %s",
-                    sample_hrefs[:12],
-                )
-            else:
-                self.log.warning(
-                    "Search grid contained no /reel/, /reels/, or /p/ anchors."
-                )
+                self.log.debug("Search grid sample hrefs: %s", sample_hrefs)
 
-            return len(collected) - before
+            return len(query_seen) - before
 
         for q_index, query in enumerate(queries, start=1):
-            if len(collected) >= Config.TARGET_REELS_SCAN:
+            if len(candidates) >= pool_target:
+                self.log.info(
+                    "Discovery pool target reached: %d/%d",
+                    len(candidates),
+                    pool_target,
+                )
                 break
-
-            query_start_count = len(collected)
 
             if drain_fn is not None:
                 try:
@@ -1167,15 +1243,15 @@ class ReelCollector:
             if not self.navigate_to_search_results(query, notifier=notifier):
                 continue
 
+            query_seen: set[str] = set()
             stagnant_scrolls = 0
+
             for scroll_idx in range(Config.SEARCH_SCROLLS_PER_QUERY):
-                if len(collected) >= Config.TARGET_REELS_SCAN:
-                    break
-                if len(collected) - query_start_count >= Config.SEARCH_MAX_PER_QUERY:
+                if len(query_seen) >= Config.SEARCH_MAX_PER_QUERY:
                     self.log.info(
-                        "Per-query cap reached for %r: %d result(s).",
+                        "Per-query pool cap reached for %r: %d",
                         query,
-                        Config.SEARCH_MAX_PER_QUERY,
+                        len(query_seen),
                     )
                     break
 
@@ -1186,20 +1262,19 @@ class ReelCollector:
                         pass
                 if stop_fn is not None and stop_fn():
                     self.log.info("/skip received during search discovery.")
-                    return collected
-
-                added = _scrape_visible_reels()
-                if added:
-                    stagnant_scrolls = 0
-                else:
-                    stagnant_scrolls += 1
-
-                if len(collected) >= Config.TARGET_REELS_SCAN:
                     break
 
-                # Keep scrolling visible and incremental on the remote desktop.
+                added = _scrape_visible_candidates(query, query_seen)
+                stagnant_scrolls = 0 if added else stagnant_scrolls + 1
+
+                if len(query_seen) >= Config.SEARCH_MAX_PER_QUERY:
+                    break
+
                 try:
-                    self._page.mouse.wheel(0, max(600, int(Config.VIEWPORT_H * 0.65)))
+                    self._page.mouse.wheel(
+                        0,
+                        max(600, int(Config.VIEWPORT_H * 0.65)),
+                    )
                 except Exception:
                     try:
                         self._page.evaluate(
@@ -1209,7 +1284,6 @@ class ReelCollector:
                         pass
                 self._bm.delay(700, 1200)
 
-                # Three no-progress scrolls usually means that query is exhausted.
                 if stagnant_scrolls >= 3:
                     self.log.info(
                         "Search query %r exhausted after %d scroll(s).",
@@ -1222,18 +1296,90 @@ class ReelCollector:
                 try:
                     notifier.send_message(
                         f"🔎 Search {q_index}/{len(queries)}: "
-                        f"<b>{query}</b> — "
-                        f"{len(collected) - query_start_count} from this query, "
-                        f"{len(collected)} total"
+                        f"<b>{query}</b> — {len(query_seen)} candidate(s), "
+                        f"{len(candidates)} unique in pool"
                     )
                 except Exception:
                     pass
 
-        self.log.info(
-            "Search-first discovery complete: %d GTA 6 Reel URL(s).",
-            len(collected),
+        if not candidates:
+            self.log.warning("Ranked GTA 6 discovery produced no candidates.")
+            return []
+
+        ranked = list(candidates.values())
+        for record in ranked:
+            record["rank_score"] = (
+                record["best_score"]
+                + max(0, len(record["queries"]) - 1) * 8.0
+            )
+
+        ranked.sort(
+            key=lambda record: (
+                -record["rank_score"],
+                -len(record["queries"]),
+                record["first_order"],
+            )
         )
-        return collected
+
+        # Diversity pass: reserve a small number of strong candidates from each
+        # query before filling the rest from the global score ranking.
+        selected: List[dict] = []
+        selected_urls: set[str] = set()
+
+        if Config.SEARCH_MIN_PER_QUERY > 0:
+            for query in queries:
+                query_ranked = [
+                    record for record in ranked
+                    if query in record["queries"] and record["url"] not in selected_urls
+                ]
+                for record in query_ranked[: Config.SEARCH_MIN_PER_QUERY]:
+                    selected.append(record)
+                    selected_urls.add(record["url"])
+                    if len(selected) >= target:
+                        break
+                if len(selected) >= target:
+                    break
+
+        if len(selected) < target:
+            for record in ranked:
+                if record["url"] in selected_urls:
+                    continue
+                selected.append(record)
+                selected_urls.add(record["url"])
+                if len(selected) >= target:
+                    break
+
+        self.log.info(
+            "Discovery ranking complete: pool=%d selected=%d target=%d",
+            len(candidates),
+            len(selected),
+            target,
+        )
+
+        for pos, record in enumerate(selected[:12], start=1):
+            self.log.info(
+                "TOP %02d %-12s score=%5.1f queries=%s",
+                pos,
+                record["reel_id"],
+                record["rank_score"],
+                ", ".join(sorted(record["queries"])),
+            )
+
+        if notifier:
+            try:
+                cross_query = sum(
+                    1 for record in selected if len(record["queries"]) > 1
+                )
+                notifier.send_message(
+                    "🧠 <b>Discovery ranked</b>\n"
+                    f"Pool: <b>{len(candidates)}</b> candidates\n"
+                    f"Selected: <b>{len(selected)}</b>\n"
+                    f"Cross-query matches: <b>{cross_query}</b>"
+                )
+            except Exception:
+                pass
+
+        return [record["url"] for record in selected]
 
 
     def collect_reel_urls(self, notifier=None, stop_fn=None, drain_fn=None) -> List[str]:
