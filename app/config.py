@@ -57,31 +57,21 @@ class Config:
     MIN_VIEWS: int = _env_int("MIN_VIEWS", 0, 0)
     MIN_LIKES: int = _env_int("MIN_LIKES", 0, 0)
 
-    # ── Gemini vision ──────────────────────────────────────────────────────────
-    GEMINI_API_KEY: str = os.environ.get("GEMINI_API_KEY", "")
-    GEMINI_MODEL: str = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
-    GEMINI_MAX_DIM: int = _env_int("GEMINI_MAX_DIM", 720, 128)
-    # How many times to retry a transient Gemini error before failing closed
-    GEMINI_RETRIES: int = _env_int("GEMINI_RETRIES", 2, 0)
-
-    # ── Gemini Web fallback (browser-based, no API key needed) ────────────────
-    # Paste Google account cookies (JSON array or semicolon-separated) so the
-    # agent can query gemini.google.com directly when the API key is absent or
-    # quota-exhausted.
-    GEMINI_COOKIES: str = os.environ.get("GEMINI_COOKIES", "")
-    # Enable Gemini Web as a vision provider when API key is unavailable
-    GEMINI_WEB_ENABLED: bool = os.environ.get("GEMINI_WEB_ENABLED", "true").strip().lower() == "true"
-    # ── Text / hashtag providers ───────────────────────────────────────────────
-    # Provider order is automatic by default: first configured provider wins.
+    # ── Free AI stack ──────────────────────────────────────────────────────────
+    # Production vision no longer uses Gemini. Groq Qwen is the primary
+    # multimodal provider; OpenRouter's free router is the fallback.
     AI_PROVIDER_ORDER: List[str] = [
         p.strip().lower()
-        for p in os.environ.get("AI_PROVIDER_ORDER", "gemini,groq,openrouter")
+        for p in os.environ.get("AI_PROVIDER_ORDER", "groq,openrouter")
         .split(",")
         if p.strip()
     ]
+    AI_MAX_DIM: int = _env_int("AI_MAX_DIM", 720, 128)
+
     GROQ_API_KEY: str = os.environ.get("GROQ_API_KEY", "")
-    # Current production Groq models. "auto" tries the stronger model first,
-    # then the smaller/faster production fallback. Override GROQ_MODEL if needed.
+    GROQ_VISION_MODEL: str = os.environ.get(
+        "GROQ_VISION_MODEL", "qwen/qwen3.6-27b"
+    )
     GROQ_MODEL: str = os.environ.get("GROQ_MODEL", "auto")
     GROQ_MODEL_CASCADE: List[str] = [
         m.strip()
@@ -106,14 +96,23 @@ class Config:
     OPENROUTER_APP_NAME: str = os.environ.get("OPENROUTER_APP_NAME", "Reels Hunter")
     OPENROUTER_SITE_URL: str = os.environ.get("OPENROUTER_SITE_URL", "").strip()
     
-    # ── Gemini Fallback Mode (when API quota/limit is hit) ────────────────────
-    # When True, if Gemini API fails due to quota/limits, fall back to using 
-    # views/likes metrics to determine quality instead of rejecting the reel
-    ENABLE_GEMINI_FALLBACK: bool = os.environ.get("ENABLE_GEMINI_FALLBACK", "true").strip().lower() == "true"
+    # ── AI fallback when free providers are unavailable ───────────────────────
+    ENABLE_GEMINI_FALLBACK: bool = os.environ.get(
+        "ENABLE_AI_METRIC_FALLBACK",
+        os.environ.get("ENABLE_GEMINI_FALLBACK", "true"),
+    ).strip().lower() == "true"
     # Minimum views required when falling back (if Gemini unavailable)
     FALLBACK_MIN_VIEWS: int = _env_int("FALLBACK_MIN_VIEWS", 500000, 0)
     # Minimum likes required when falling back (if Gemini unavailable)
     FALLBACK_MIN_LIKES: int = _env_int("FALLBACK_MIN_LIKES", 250000, 0)
+
+    # ── Railway review/control panel ───────────────────────────────────────────
+    CONTROL_PANEL_URL: str = os.environ.get("CONTROL_PANEL_URL", "").strip().rstrip("/")
+    CONTROL_PANEL_TOKEN: str = os.environ.get("CONTROL_PANEL_TOKEN", "").strip()
+    CONTROL_PANEL_TIMEOUT: int = _env_int("CONTROL_PANEL_TIMEOUT", 25, 5)
+    CONTROL_PANEL_UPLOAD_VIDEO: bool = os.environ.get(
+        "CONTROL_PANEL_UPLOAD_VIDEO", "true"
+    ).strip().lower() == "true"
 
     # ── Telegram ───────────────────────────────────────────────────────────────
     TELEGRAM_BOT_TOKEN: str = os.environ.get("TELEGRAM_BOT_TOKEN", "")
