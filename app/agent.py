@@ -836,9 +836,11 @@ class InstagramAgent:
             run_stats.record(task)
             return
 
-        views = metrics["views"]
-        likes = metrics["likes"]
-        caption = metrics.get("caption", "")
+        views = int(metrics["views"])
+        likes = int(metrics["likes"])
+        caption = str(metrics.get("caption", "") or "")
+        metrics_source = str(metrics.get("source", "") or "")
+        metrics_confidence = str(metrics.get("confidence", "") or "")
         task.views = views
         task.likes = likes
 
@@ -849,6 +851,14 @@ class InstagramAgent:
                 task.mark_skipped(reason, FailureKind.PERMANENT)
                 self.log.info(f"[{reel_id}] SKIP: {reason}")
                 self.db.mark_processed(reel_id, reel_url, "skipped", views, likes, reason)
+                self._report_control_review(
+                    task,
+                    review_status="scanned",
+                    ai_reason=reason,
+                    caption=caption,
+                    metrics_source=metrics_source,
+                    metrics_confidence=metrics_confidence,
+                )
                 run_stats.record(task)
                 return
             if Config.MIN_VIEWS > 0 and views < Config.MIN_VIEWS:
@@ -870,6 +880,14 @@ class InstagramAgent:
                 task.mark_skipped(reason, FailureKind.PERMANENT)
                 self.log.info(f"[{reel_id}] SKIP ({reason})")
                 self.db.mark_processed(reel_id, reel_url, "skipped", views, likes, reason)
+                self._report_control_review(
+                    task,
+                    review_status="scanned",
+                    ai_reason=reason,
+                    caption=caption,
+                    metrics_source=metrics_source,
+                    metrics_confidence=metrics_confidence,
+                )
                 run_stats.record(task)
                 return
             self.log.info(f"[{reel_id}] Caption OK: {cap_reason}")
@@ -888,6 +906,14 @@ class InstagramAgent:
             if not screenshot:
                 task.mark_failed("Screenshot capture failed", FailureKind.VISION)
                 self.db.mark_processed(reel_id, reel_url, "error", views, likes, "screenshot_failed")
+                self._report_control_review(
+                    task,
+                    review_status="scanned",
+                    ai_reason="screenshot_failed",
+                    caption=caption,
+                    metrics_source=metrics_source,
+                    metrics_confidence=metrics_confidence,
+                )
                 run_stats.record(task)
                 return
 
@@ -900,6 +926,16 @@ class InstagramAgent:
                 )
                 task.mark_failed(f"Vision exception: {exc}", FailureKind.VISION)
                 self.db.mark_processed(reel_id, reel_url, "skipped", views, likes, f"vision_exception:{exc}")
+                self._report_control_review(
+                    task,
+                    review_status="ai_rejected",
+                    ai_decision="FAILED",
+                    ai_reason=f"vision_exception:{exc}",
+                    preview_bytes=screenshot,
+                    caption=caption,
+                    metrics_source=metrics_source,
+                    metrics_confidence=metrics_confidence,
+                )
                 run_stats.record(task)
                 return
 
@@ -907,10 +943,30 @@ class InstagramAgent:
                 task.mark_skipped(vision_reason, FailureKind.VISION)
                 self.log.info(f"[{reel_id}] SKIP (vision): {vision_reason}")
                 self.db.mark_processed(reel_id, reel_url, "skipped", views, likes, f"vision:{vision_reason}")
+                self._report_control_review(
+                    task,
+                    review_status="ai_rejected",
+                    ai_decision="FAILED",
+                    ai_reason=vision_reason,
+                    preview_bytes=screenshot,
+                    caption=caption,
+                    metrics_source=metrics_source,
+                    metrics_confidence=metrics_confidence,
+                )
                 run_stats.record(task)
                 return
 
             self.log.info(f"[{reel_id}] Vision passed: {vision_reason}")
+            self._report_control_review(
+                task,
+                review_status="pending",
+                ai_decision="PASSED",
+                ai_reason=vision_reason,
+                preview_bytes=screenshot,
+                caption=caption,
+                metrics_source=metrics_source,
+                metrics_confidence=metrics_confidence,
+            )
 
             if collect_ai_tags and screenshot:
                 try:
@@ -939,10 +995,31 @@ class InstagramAgent:
             task.mark_retry("All download strategies failed", FailureKind.DOWNLOAD)
             self.log.error(f"[{reel_id}] Download failed (all strategies exhausted)")
             self.db.mark_processed(reel_id, reel_url, "download_failed", views, likes, "all_strategies_failed")
+            self._report_control_review(
+                task,
+                review_status="pending",
+                ai_decision="PASSED",
+                ai_reason="AI passed; video download failed",
+                preview_bytes=screenshot,
+                caption=caption,
+                metrics_source=metrics_source,
+                metrics_confidence=metrics_confidence,
+            )
             run_stats.record(task)
             return
 
         self.log.info(f"[{reel_id}] Downloaded via strategy={strategy}")
+        self._report_control_review(
+            task,
+            review_status="pending",
+            ai_decision="PASSED",
+            ai_reason=vision_reason if not skip_vision else "Vision skipped in test mode",
+            preview_bytes=screenshot,
+            video_path=video_path,
+            caption=caption,
+            metrics_source=metrics_source,
+            metrics_confidence=metrics_confidence,
+        )
 
         # ── 7. Register pending BEFORE Telegram upload (crash-safety) ─────────
         try:
