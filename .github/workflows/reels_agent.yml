@@ -218,7 +218,7 @@ jobs:
           sudo wget -qO /usr/share/keyrings/xpra.asc https://xpra.org/xpra.asc
           sudo wget -qO /etc/apt/sources.list.d/xpra.sources             https://raw.githubusercontent.com/Xpra-org/xpra/master/packaging/repos/noble/xpra.sources
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends xpra xpra-html5
+          sudo apt-get install -y --no-install-recommends xpra xpra-html5 xpra-x11
 
           if [ -z "$XPRA_PASSWORD_SECRET" ]; then
             echo "::error::XPRA_PASSWORD secret is required for the remote desktop."
