@@ -1072,7 +1072,7 @@ class ReelCollector:
         def _card_evidence(link) -> tuple[str, bool]:
             try:
                 data = link.evaluate(
-                    """el => {
+                    r"""el => {
                         const bits = [
                             el.getAttribute('aria-label') || '',
                             el.getAttribute('title') || '',
