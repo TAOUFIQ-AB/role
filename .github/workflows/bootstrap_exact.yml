@@ -61,8 +61,14 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
-          cp -a /tmp/project/role-main/. .
+          # GITHUB_TOKEN cannot create/update workflow files in this repository.
+          # Publish the exact verified project while preserving the bootstrap
+          # workflow; the GitHub connector installs the final workflows next.
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github -exec rm -rf {} +
+          mkdir -p .github
+          find .github -mindepth 1 -maxdepth 1 ! -name workflows -exec rm -rf {} +
+          find .github/workflows -mindepth 1 -maxdepth 1 ! -name bootstrap_exact.yml -exec rm -rf {} +
+          rsync -a --exclude='.github/workflows/' /tmp/project/role-main/ ./
           git add -A
-          git commit -m "Publish verified GitHub Actions project"
+          git commit -m "Publish verified project code"
           git push origin HEAD:main
