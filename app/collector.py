@@ -976,47 +976,110 @@ class ReelCollector:
         )
 
         def _scrape_visible_reels() -> int:
+            """
+            Scrape visible search-result cards.
+
+            Instagram frequently represents videos/Reels in keyword search with
+            /p/{shortcode}/ links rather than /reel/{shortcode}/ links. Detect
+            video-ish cards from their descendants/labels and accept those /p/
+            links too.
+            """
             before = len(collected)
-            selectors = (
-                "a[href*='/reel/']",
-                "a[href*='/reels/']",
-            )
-            for sel in selectors:
+            try:
+                anchors = self._page.query_selector_all(
+                    "main a[href*='/reel/'], main a[href*='/reels/'], main a[href*='/p/']"
+                )
+            except Exception as exc:
+                self.log.debug("Search anchor query failed: %s", exc)
+                anchors = []
+
+            sample_hrefs: List[str] = []
+
+            for link in anchors:
                 try:
-                    for link in self._page.query_selector_all(sel):
+                    href = link.get_attribute("href") or ""
+                    if not href:
+                        continue
+                    if len(sample_hrefs) < 12:
+                        sample_hrefs.append(href)
+
+                    full = (
+                        f"https://www.instagram.com{href}"
+                        if href.startswith("/")
+                        else href
+                    )
+                    full = full.split("?")[0].rstrip("/") + "/"
+                    if full in seen:
+                        continue
+
+                    # Canonical Reel URLs are always video candidates.
+                    is_video_candidate = bool(
+                        re.search(r"instagram\.com/reels?/[A-Za-z0-9_-]{8,}", full)
+                    )
+
+                    # Search can expose Reel/video cards as /p/ links. Detect
+                    # video-specific overlay/icons/labels inside the grid card.
+                    if not is_video_candidate and re.search(
+                        r"instagram\.com/p/[A-Za-z0-9_-]{8,}", full
+                    ):
                         try:
-                            href = link.get_attribute("href") or ""
-                            if not href:
-                                continue
-                            full = (
-                                f"https://www.instagram.com{href}"
-                                if href.startswith("/")
-                                else href
+                            evidence = link.evaluate(
+                                """el => {
+                                    const text = [
+                                        el.getAttribute('aria-label') || '',
+                                        el.title || '',
+                                        el.innerText || '',
+                                        ...Array.from(el.querySelectorAll('[aria-label], svg, span'))
+                                            .slice(0, 30)
+                                            .map(x => (
+                                                x.getAttribute?.('aria-label') ||
+                                                x.getAttribute?.('title') ||
+                                                x.textContent ||
+                                                ''
+                                            ))
+                                    ].join(' ').toLowerCase();
+                                    return {
+                                        text,
+                                        hasVideo: !!el.querySelector('video'),
+                                    };
+                                }"""
                             )
-                            full = full.split("?")[0].rstrip("/") + "/"
-                            # Search discovery intentionally excludes generic /p/
-                            # posts: the user asked for GTA 6 videos/Reels.
-                            if (
-                                full not in seen
-                                and re.search(
-                                    r"instagram\.com/reels?/[A-Za-z0-9_-]{8,}",
-                                    full,
-                                )
-                            ):
-                                seen.add(full)
-                                collected.append(full)
-                                self.log.info(
-                                    "[%d/%d] Search reel: %s",
-                                    len(collected),
-                                    Config.TARGET_REELS_SCAN,
-                                    self.extract_reel_id(full),
-                                )
-                                if len(collected) >= Config.TARGET_REELS_SCAN:
-                                    return len(collected) - before
-                        except Exception as exc:
-                            self.log.debug("Search result link read failed: %s", exc)
+                            marker_text = str((evidence or {}).get("text", "")).lower()
+                            is_video_candidate = bool((evidence or {}).get("hasVideo")) or any(
+                                token in marker_text
+                                for token in ("reel", "video", "clip", "play")
+                            )
+                        except Exception:
+                            is_video_candidate = False
+
+                    if not is_video_candidate:
+                        continue
+
+                    seen.add(full)
+                    collected.append(full)
+                    self.log.info(
+                        "[%d/%d] Search video: %s (%s)",
+                        len(collected),
+                        Config.TARGET_REELS_SCAN,
+                        self.extract_reel_id(full),
+                        "/reel/" if "/reel" in full else "/p/",
+                    )
+                    if len(collected) >= Config.TARGET_REELS_SCAN:
+                        break
+
                 except Exception as exc:
-                    self.log.debug("Search selector %r failed: %s", sel, exc)
+                    self.log.debug("Search result card read failed: %s", exc)
+
+            if sample_hrefs:
+                self.log.info(
+                    "Search grid sample hrefs: %s",
+                    sample_hrefs[:12],
+                )
+            else:
+                self.log.warning(
+                    "Search grid contained no /reel/, /reels/, or /p/ anchors."
+                )
+
             return len(collected) - before
 
         for q_index, query in enumerate(queries, start=1):
