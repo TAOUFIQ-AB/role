@@ -404,7 +404,7 @@ class InstagramAgent:
 
         self.db       = DatabaseManager(Config.DB_PATH)
         self.bm       = BrowserManager()
-        self.vision   = VisionEvaluator(Config.GEMINI_API_KEY)
+        self.vision   = VisionEvaluator()
         self.notifier = NotificationService(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID)
         self.tiktok   = TikTokPoster()
         self.b2       = B2Uploader()
