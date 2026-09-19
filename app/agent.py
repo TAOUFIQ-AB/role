@@ -1018,6 +1018,96 @@ class InstagramAgent:
 
         run_stats.record(task)
 
+    # ── Railway control panel bridge ──────────────────────────────────────────
+
+    def _sync_control_commands(self) -> None:
+        """Poll Railway control commands and publish a throttled heartbeat."""
+        if not self.control.enabled:
+            return
+
+        now = time.monotonic()
+        if now - self._last_control_heartbeat >= 10:
+            self.control.heartbeat(
+                state=(
+                    "paused" if self._paused
+                    else "hunting" if self._hunting
+                    else "idle"
+                ),
+                hunting=self._hunting,
+                paused=self._paused,
+                scanned=self.session_stats.scanned,
+                sent=self.session_stats.sent,
+                min_views=Config.MIN_VIEWS,
+                min_likes=Config.MIN_LIKES,
+                target_reels=Config.TARGET_REELS_SCAN,
+                max_send=Config.MAX_QUALIFIED_SEND,
+            )
+            self._last_control_heartbeat = now
+
+        for item in self.control.poll_commands():
+            command = str(item.get("command") or "").strip().lower()
+            payload = item.get("payload") or {}
+
+            if command == "start":
+                self._cmd_queue.put({"cmd": "/start", "arg": ""})
+            elif command == "pause":
+                self._cmd_queue.put({"cmd": "/pause", "arg": ""})
+            elif command == "resume":
+                self._cmd_queue.put({"cmd": "/resume", "arg": ""})
+            elif command == "stop":
+                self._cmd_queue.put({"cmd": "/stop", "arg": ""})
+            elif command == "skip":
+                self._cmd_queue.put({"cmd": "/skip", "arg": ""})
+            elif command == "config":
+                mapping = (
+                    ("min_views", "/setviews"),
+                    ("min_likes", "/setlikes"),
+                    ("target_reels", "/setscans"),
+                    ("max_send", "/setsend"),
+                )
+                for key, cmd in mapping:
+                    if key in payload and str(payload[key]).strip() != "":
+                        self._cmd_queue.put(
+                            {"cmd": cmd, "arg": str(payload[key]).strip()}
+                        )
+
+    def _report_control_review(
+        self,
+        task: ReelTask,
+        *,
+        review_status: str,
+        ai_decision: str = "",
+        ai_reason: str = "",
+        preview_bytes: Optional[bytes] = None,
+        video_path: Optional[Path] = None,
+        caption: str = "",
+        metrics_source: str = "",
+        metrics_confidence: str = "",
+    ) -> None:
+        if not self.control.enabled:
+            return
+
+        meta = {}
+        if self.collector is not None:
+            meta = self.collector.discovery_metadata.get(task.url, {}) or {}
+
+        self.control.ingest(
+            reel_id=task.reel_id,
+            reel_url=task.url,
+            review_status=review_status,
+            ai_decision=ai_decision,
+            ai_reason=ai_reason,
+            views=int(getattr(task, "views", 0) or 0),
+            likes=int(getattr(task, "likes", 0) or 0),
+            metrics_source=metrics_source,
+            metrics_confidence=metrics_confidence,
+            discovery_score=float(meta.get("score") or 0.0),
+            queries=", ".join(meta.get("queries") or []),
+            caption=caption,
+            preview_bytes=preview_bytes,
+            video_path=video_path,
+        )
+
     # ── Command priority: drain queue without blocking ────────────────────────
 
     def _drain_cmd_queue(self, defer_hunt_cmds: bool = True) -> None:
@@ -1033,6 +1123,8 @@ class InstagramAgent:
         When defer_hunt_cmds=True (inside a running hunt), __hunt__, __test__ and __testsetup__ are put back on the queue rather than executed inline, so
         they run after the current hunt completes.
         """
+        self._sync_control_commands()
+
         deferred: List[Dict] = []
         while True:
             try:
