@@ -1154,6 +1154,8 @@ class ReelCollector:
             if len(collected) >= Config.TARGET_REELS_SCAN:
                 break
 
+            query_start_count = len(collected)
+
             if drain_fn is not None:
                 try:
                     drain_fn()
@@ -1168,6 +1170,13 @@ class ReelCollector:
             stagnant_scrolls = 0
             for scroll_idx in range(Config.SEARCH_SCROLLS_PER_QUERY):
                 if len(collected) >= Config.TARGET_REELS_SCAN:
+                    break
+                if len(collected) - query_start_count >= Config.SEARCH_MAX_PER_QUERY:
+                    self.log.info(
+                        "Per-query cap reached for %r: %d result(s).",
+                        query,
+                        Config.SEARCH_MAX_PER_QUERY,
+                    )
                     break
 
                 if drain_fn is not None:
@@ -1213,7 +1222,9 @@ class ReelCollector:
                 try:
                     notifier.send_message(
                         f"🔎 Search {q_index}/{len(queries)}: "
-                        f"<b>{query}</b> — {len(collected)} reel(s) collected"
+                        f"<b>{query}</b> — "
+                        f"{len(collected) - query_start_count} from this query, "
+                        f"{len(collected)} total"
                     )
                 except Exception:
                     pass
