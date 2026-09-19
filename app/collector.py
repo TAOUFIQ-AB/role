@@ -208,72 +208,205 @@ class ReelCollector:
 
     # ── Metrics extraction ────────────────────────────────────────────────────
 
-    def extract_metrics(self) -> Dict[str, int]:
+    def _extract_structured_metrics(self) -> Optional[Dict[str, object]]:
         """
-        Extract view/play + like counts from the current reel page.
+        Prefer one embedded Instagram media object that contains BOTH engagement
+        values. This prevents the old DOM fallbacks from pairing a view count
+        from one element with a like count from another post/card.
+        """
+        try:
+            raw = self._page.evaluate(r"""
+                () => {
+                    const pathMatch = /\/(?:reel|reels|p)\/([A-Za-z0-9_-]+)/.exec(location.pathname);
+                    const shortcode = pathMatch ? pathMatch[1] : "";
+                    const candidates = [];
+                    const seen = new Set();
 
-        IMPORTANT: Instagram Reels now displays "X plays" not "X views".
-        Both labels are handled throughout this method.
+                    const asNum = (v) => {
+                        if (v === null || v === undefined) return null;
+                        if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+                        if (typeof v === "string" && /^\d+$/.test(v.trim())) return parseInt(v.trim(), 10);
+                        return null;
+                    };
+
+                    const captionOf = (o) => {
+                        try {
+                            if (typeof o?.caption?.text === "string") return o.caption.text;
+                            const edge = o?.edge_media_to_caption?.edges?.[0]?.node?.text;
+                            if (typeof edge === "string") return edge;
+                            if (typeof o?.caption_text === "string") return o.caption_text;
+                        } catch (e) {}
+                        return "";
+                    };
+
+                    const inspect = (o, depth = 0) => {
+                        if (!o || depth > 9) return;
+                        if (typeof o !== "object") return;
+                        if (seen.has(o)) return;
+                        seen.add(o);
+
+                        if (Array.isArray(o)) {
+                            for (const item of o.slice(0, 250)) inspect(item, depth + 1);
+                            return;
+                        }
+
+                        const code = String(o.code ?? o.shortcode ?? "");
+                        const plays = asNum(
+                            o.play_count ??
+                            o.video_view_count ??
+                            o.video_play_count ??
+                            o.view_count
+                        );
+                        const likes = asNum(
+                            o.like_count ??
+                            o.edge_media_preview_like?.count ??
+                            o.edge_liked_by?.count
+                        );
+
+                        if (plays !== null || likes !== null) {
+                            let score = 0;
+                            if (shortcode && code === shortcode) score += 1000;
+                            if (plays !== null) score += 50;
+                            if (likes !== null) score += 50;
+                            if (captionOf(o)) score += 10;
+                            if (o.media_type === 2 || o.is_video === true) score += 10;
+                            candidates.push({
+                                code,
+                                views: plays ?? 0,
+                                likes: likes ?? 0,
+                                caption: captionOf(o),
+                                score,
+                            });
+                        }
+
+                        for (const [key, value] of Object.entries(o)) {
+                            if (
+                                value && typeof value === "object" &&
+                                !["owner", "user", "coauthor_producers"].includes(key)
+                            ) {
+                                inspect(value, depth + 1);
+                            }
+                        }
+                    };
+
+                    try { inspect(window.__additionalData); } catch (e) {}
+                    try { inspect(window._sharedData); } catch (e) {}
+
+                    const scripts = document.querySelectorAll(
+                        'script[type="application/json"], script[type="application/ld+json"]'
+                    );
+                    for (const s of scripts) {
+                        const txt = s.textContent || "";
+                        if (!txt || txt.length > 8_000_000) continue;
+                        try { inspect(JSON.parse(txt)); } catch (e) {}
+                    }
+
+                    candidates.sort((a, b) => b.score - a.score);
+                    return candidates[0] || null;
+                }
+            """)
+            if isinstance(raw, dict):
+                views = int(raw.get("views") or 0)
+                likes = int(raw.get("likes") or 0)
+                if views > 0 or likes > 0:
+                    return {
+                        "views": views,
+                        "likes": likes,
+                        "caption": str(raw.get("caption") or ""),
+                        "source": "embedded_media_json",
+                        "confidence": "high",
+                    }
+        except Exception as exc:
+            self.log.debug("Structured metrics extraction failed: %s", exc)
+        return None
+
+    def extract_metrics(self) -> Dict[str, object]:
         """
-        # Step 1: wait for network to settle so lazy JS has run
+        Extract normalized engagement metrics for the CURRENT reel.
+
+        Priority:
+          1) one embedded media JSON record containing the engagement fields;
+          2) legacy JS/CSS fallbacks;
+          3) sanity correction when a DOM fallback yields impossible likes>views.
+        """
         try:
             self._page.wait_for_load_state("networkidle", timeout=8_000)
         except Exception:
-            pass  # non-fatal — proceed with whatever is loaded
-
-        # Step 2: scroll the like/play section into view to trigger lazy render
-        try:
-            self._page.evaluate("""
-                () => {
-                    const candidates = [
-                        ...document.querySelectorAll('section, [role="main"]'),
-                    ];
-                    const last = candidates[candidates.length - 1];
-                    if (last) last.scrollIntoView({behavior: 'instant', block: 'center'});
-                }
-            """)
-        except Exception:
             pass
 
-        self._bm.delay(2000, 3000)
+        self._bm.delay(900, 1600)
 
-        # Step 3: try extraction — retry once with longer wait if we get 0
-        for attempt in range(2):
-            views = self._extract_views_js()
-            if views == 0:
-                self.log.debug(f"JS view extraction got 0 (attempt {attempt+1}) — trying CSS fallback")
-                views = self._extract_count(
-                    SelectorRegistry.VIEW_COUNT,
-                    keywords=["view", "play"],
-                    exclude=None,
-                    label="views",
-                )
+        structured = self._extract_structured_metrics()
+        if structured:
+            views = int(structured["views"])
+            likes = int(structured["likes"])
+            caption = str(structured.get("caption") or "")
+            source = str(structured.get("source") or "embedded_media_json")
+            confidence = str(structured.get("confidence") or "high")
+        else:
+            views = 0
+            likes = 0
+            for attempt in range(2):
+                views = self._extract_views_js()
+                if views == 0:
+                    views = self._extract_count(
+                        SelectorRegistry.VIEW_COUNT,
+                        keywords=["view", "play"],
+                        exclude=None,
+                        label="views",
+                    )
 
-            likes = self._extract_likes_js()
-            if likes == 0:
-                self.log.debug("JS like extraction got 0 — trying CSS fallback")
-                likes = self._extract_count(
-                    SelectorRegistry.LIKE_COUNT,
-                    keywords=["like"],
-                    exclude="unlike",
-                    label="likes",
-                )
+                likes = self._extract_likes_js()
+                if likes == 0:
+                    likes = self._extract_count(
+                        SelectorRegistry.LIKE_COUNT,
+                        keywords=["like"],
+                        exclude="unlike",
+                        label="likes",
+                    )
 
-            if views > 0 or likes > 0:
-                break
+                if views > 0 or likes > 0:
+                    break
+                if attempt == 0:
+                    self._bm.delay(1800, 2600)
 
-            if attempt == 0:
-                self.log.debug("Stats still 0 — waiting 4s and retrying extraction")
-                self._bm.delay(3500, 4500)
-                try:
-                    self._page.mouse.wheel(0, 300)
-                    self._bm.delay(500, 800)
-                    self._page.mouse.wheel(0, -300)
-                except Exception:
-                    pass
+            caption = ""
+            source = "dom_fallback"
+            confidence = "low"
 
-        self.log.info(f"Metrics: views={views:,}  likes={likes:,}")
-        return {"views": views, "likes": likes}
+        corrected = False
+        # Likes cannot exceed plays/views for a reel. The legacy DOM parser
+        # occasionally reads these two nearby numbers in reverse order.
+        if views > 0 and likes > views:
+            self.log.warning(
+                "Metric sanity correction: impossible likes (%s) > views (%s); swapping.",
+                f"{likes:,}",
+                f"{views:,}",
+            )
+            views, likes = likes, views
+            corrected = True
+            source += "+sanity_swap"
+            confidence = "medium"
+
+        if views == 0 and likes > 0:
+            confidence = "low"
+
+        self.log.info(
+            "Metrics normalized: views=%s likes=%s source=%s confidence=%s%s",
+            f"{views:,}",
+            f"{likes:,}",
+            source,
+            confidence,
+            " corrected" if corrected else "",
+        )
+        return {
+            "views": views,
+            "likes": likes,
+            "caption": caption,
+            "source": source,
+            "confidence": confidence,
+            "corrected": corrected,
+        }
 
     def _extract_views_js(self) -> int:
         """
