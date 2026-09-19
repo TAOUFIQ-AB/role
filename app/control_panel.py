@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -18,16 +20,65 @@ class ControlPanelClient:
         self.log = logging.getLogger("ControlPanelClient")
         self.base_url = Config.CONTROL_PANEL_URL
         self.token = Config.CONTROL_PANEL_TOKEN
-        self.enabled = bool(self.base_url and self.token)
         self._session = requests.Session()
+        self._oidc_token = ""
+        self._oidc_expires_at = 0.0
+        self.enabled = bool(
+            self.base_url
+            and (
+                self.token
+                or (
+                    os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL")
+                    and os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+                )
+            )
+        )
         if self.enabled:
-            self._session.headers.update({"X-Agent-Token": self.token})
-            self.log.info("Railway control panel enabled: %s", self.base_url)
+            if self.token:
+                self._session.headers.update({"X-Agent-Token": self.token})
+                auth_mode = "static token"
+            else:
+                auth_mode = "GitHub OIDC"
+            self.log.info(
+                "Railway control panel enabled: %s (auth=%s)",
+                self.base_url,
+                auth_mode,
+            )
         else:
             self.log.info(
                 "Railway control panel disabled "
-                "(CONTROL_PANEL_URL/TOKEN not fully configured)."
+                "(CONTROL_PANEL_URL plus token or GitHub OIDC required)."
             )
+
+    def _auth_headers(self) -> dict[str, str]:
+        if self.token:
+            return {"X-Agent-Token": self.token}
+
+        now = time.time()
+        if self._oidc_token and now < self._oidc_expires_at - 60:
+            return {"Authorization": f"Bearer {self._oidc_token}"}
+
+        req_url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", "").strip()
+        req_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "").strip()
+        if not req_url or not req_token:
+            return {}
+
+        sep = "&" if "?" in req_url else "?"
+        url = req_url + sep + "audience=reels-hunter-dashboard"
+        r = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {req_token}"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        token = str((r.json() or {}).get("value") or "").strip()
+        if not token:
+            raise RuntimeError("GitHub OIDC endpoint returned no token")
+
+        # GitHub OIDC tokens are short lived. Cache conservatively.
+        self._oidc_token = token
+        self._oidc_expires_at = now + 240
+        return {"Authorization": f"Bearer {token}"}
 
     def heartbeat(self, **state: Any) -> bool:
         if not self.enabled:
@@ -36,6 +87,7 @@ class ControlPanelClient:
             r = self._session.post(
                 f"{self.base_url}/api/agent/heartbeat",
                 json=state,
+                headers=self._auth_headers(),
                 timeout=min(Config.CONTROL_PANEL_TIMEOUT, 12),
             )
             r.raise_for_status()
@@ -50,6 +102,7 @@ class ControlPanelClient:
         try:
             r = self._session.get(
                 f"{self.base_url}/api/agent/commands",
+                headers=self._auth_headers(),
                 timeout=min(Config.CONTROL_PANEL_TIMEOUT, 12),
             )
             r.raise_for_status()
@@ -123,6 +176,7 @@ class ControlPanelClient:
                 f"{self.base_url}/api/agent/ingest",
                 data=data,
                 files=files or None,
+                headers=self._auth_headers(),
                 timeout=max(Config.CONTROL_PANEL_TIMEOUT, 25),
             )
             r.raise_for_status()
