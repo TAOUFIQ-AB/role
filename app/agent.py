@@ -1192,7 +1192,7 @@ class InstagramAgent:
                 # ── Priority: flush commands BEFORE each reel ──────────────
                 self._drain_cmd_queue(defer_hunt_cmds=True)
 
-                if self._stop or self._deadline_approaching():
+                if self._stop or self._paused or self._deadline_approaching():
                     break
                 if run_stats.sent >= Config.MAX_QUALIFIED_SEND:
                     break
@@ -1240,7 +1240,7 @@ class InstagramAgent:
                 self.log.info(f"Processing {retried} retry task(s)...")
                 while not self.wq.process.empty():
                     self._drain_cmd_queue(defer_hunt_cmds=True)
-                    if self._stop or self._deadline_approaching():
+                    if self._stop or self._paused or self._deadline_approaching():
                         break
                     if run_stats.sent >= Config.MAX_QUALIFIED_SEND:
                         break
@@ -1606,13 +1606,23 @@ class InstagramAgent:
             else:
                 self._skip_collection = True
                 reply(
-                    "⏩ <b>Skip requested</b> — URL collection will stop after the current "
-                    "step and the download + Gemini stage will begin immediately with the "
-                    "reels collected so far."
+                    "⏩ <b>Skip requested</b> — discovery will stop after the current "
+                    "step and processing will continue with the candidates already collected."
                 )
 
+        elif cmd == "/pause":
+            self._paused = True
+            self._skip_collection = True
+            reply("⏸️ Paused — the active hunt will stop at the next safe boundary.")
+
+        elif cmd == "/stop":
+            self._stop = True
+            self._skip_collection = True
+            reply("⏹️ Stop requested — the hunter will shut down safely.")
+
         elif cmd == "/resume":
-            # /resume re-enables hunting if it was paused / stopped
+            self._paused = False
+            self._skip_collection = False
             if self._hunting:
                 reply("🟢 Hunt is already running.")
             else:
