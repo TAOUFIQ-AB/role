@@ -22,12 +22,14 @@ import sys
 import threading
 import time
 import traceback
+from io import BytesIO
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import requests
+from PIL import Image
 
 from playwright.sync_api import (
     Page,
@@ -291,7 +293,7 @@ def _capture_reel_screenshot(page: Page, reel_id: str) -> Optional[bytes]:
             clip={"x": 0, "y": 0, "width": Config.VIEWPORT_W, "height": Config.VIEWPORT_H},
         )
 
-    ts   = int(time.time())
+    ts = int(time.time())
     path = Config.SCREENSHOT_DIR / f"{reel_id}_{ts}.jpg"
     try:
         path.write_bytes(raw)
@@ -299,6 +301,94 @@ def _capture_reel_screenshot(page: Page, reel_id: str) -> Optional[bytes]:
         log.warning(f"[{reel_id}] Could not save screenshot to disk (non-fatal): {exc}")
 
     log.debug(f"[{reel_id}] Screenshot captured ({len(raw) // 1024} KB)")
+    return raw
+
+
+def _capture_reel_contact_sheet(page: Page, reel_id: str) -> Optional[bytes]:
+    """
+    Capture early / middle / late moments from the visible video and combine
+    them into one image for a more representative Gemini decision.
+    """
+    video = None
+    for sel in SelectorRegistry.VIDEO_ELEMENT:
+        try:
+            candidate = page.query_selector(sel)
+            if candidate and candidate.is_visible():
+                video = candidate
+                break
+        except Exception:
+            pass
+
+    if video is None:
+        return _capture_reel_screenshot(page, reel_id)
+
+    frames: List[Image.Image] = []
+    fractions = (0.18, 0.50, 0.82)
+
+    try:
+        meta = video.evaluate(
+            """v => ({
+                duration: Number.isFinite(v.duration) ? v.duration : 0,
+                currentTime: v.currentTime || 0
+            })"""
+        ) or {}
+        duration = float(meta.get("duration") or 0)
+    except Exception:
+        duration = 0.0
+
+    for fraction in fractions:
+        try:
+            if duration > 2.0:
+                target = max(0.3, min(duration - 0.3, duration * fraction))
+                video.evaluate(
+                    """(v, t) => {
+                        try { v.pause(); } catch (e) {}
+                        try { v.currentTime = t; } catch (e) {}
+                    }""",
+                    target,
+                )
+                page.wait_for_timeout(550)
+
+            raw = video.screenshot(type="jpeg", quality=86)
+            img = Image.open(BytesIO(raw)).convert("RGB")
+            # Normalize each portrait frame before creating the strip.
+            target_w = 320
+            target_h = max(180, int(img.height * (target_w / max(1, img.width))))
+            img = img.resize((target_w, target_h))
+            frames.append(img)
+        except Exception as exc:
+            log.debug(f"[{reel_id}] Contact-sheet frame failed: {exc}")
+
+    if not frames:
+        return _capture_reel_screenshot(page, reel_id)
+    if len(frames) == 1:
+        buf = BytesIO()
+        frames[0].save(buf, format="JPEG", quality=88)
+        return buf.getvalue()
+
+    height = max(frame.height for frame in frames)
+    sheet = Image.new("RGB", (sum(frame.width for frame in frames), height), (0, 0, 0))
+    x = 0
+    for frame in frames:
+        y = (height - frame.height) // 2
+        sheet.paste(frame, (x, y))
+        x += frame.width
+
+    buf = BytesIO()
+    sheet.save(buf, format="JPEG", quality=88, optimize=True)
+    raw = buf.getvalue()
+
+    ts = int(time.time())
+    path = Config.SCREENSHOT_DIR / f"{reel_id}_{ts}_contact.jpg"
+    try:
+        path.write_bytes(raw)
+    except OSError as exc:
+        log.warning(f"[{reel_id}] Could not save contact sheet (non-fatal): {exc}")
+
+    log.info(
+        f"[{reel_id}] Vision contact sheet captured "
+        f"({len(frames)} frames, {len(raw) // 1024} KB)"
+    )
     return raw
 
 
@@ -790,7 +880,7 @@ class InstagramAgent:
         suggested_tags: List[str] = []
         if not skip_vision:
             try:
-                screenshot = _capture_reel_screenshot(page, reel_id)
+                screenshot = _capture_reel_contact_sheet(page, reel_id)
             except PlaywrightError as exc:
                 self.log.error(f"[{reel_id}] Screenshot Playwright error: {exc}")
             except Exception as exc:
