@@ -1,7 +1,6 @@
 # Runtime dependencies — pinned for reproducible GitHub Actions builds.
 # Python 3.12 is the primary CI/runtime target.
 playwright==1.63.0
-google-genai==2.24.0
 Pillow==12.3.0
 requests==2.34.2
 yt-dlp==2026.8.19
