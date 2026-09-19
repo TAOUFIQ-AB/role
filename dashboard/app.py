@@ -5,6 +5,9 @@ import os
 import re
 import sqlite3
 from datetime import datetime, timezone
+
+import jwt
+from jwt import PyJWKClient
 from functools import wraps
 from pathlib import Path
 
@@ -33,6 +36,15 @@ app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_UPLOAD_MB", "120")) *
 
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
 AGENT_TOKEN = os.environ.get("AGENT_TOKEN", "")
+GITHUB_REPOSITORY_ALLOW = os.environ.get(
+    "GITHUB_REPOSITORY_ALLOW", "TAOUFIQ-AB/role"
+).strip()
+GITHUB_OIDC_AUDIENCE = os.environ.get(
+    "GITHUB_OIDC_AUDIENCE", "reels-hunter-dashboard"
+).strip()
+_GITHUB_JWKS = PyJWKClient(
+    "https://token.actions.githubusercontent.com/.well-known/jwks"
+)
 
 
 def now_iso() -> str:
@@ -103,14 +115,38 @@ def ui_auth_required(fn):
     return wrapper
 
 
+def _valid_github_oidc(token: str) -> bool:
+    if not token or token.count(".") != 2:
+        return False
+    try:
+        signing_key = _GITHUB_JWKS.get_signing_key_from_jwt(token)
+        claims = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=GITHUB_OIDC_AUDIENCE,
+            issuer="https://token.actions.githubusercontent.com",
+            options={"require": ["exp", "iat", "iss", "aud", "repository"]},
+        )
+        repository = str(claims.get("repository") or "")
+        event_name = str(claims.get("event_name") or "")
+        return (
+            repository == GITHUB_REPOSITORY_ALLOW
+            and event_name in {"push", "schedule", "workflow_dispatch"}
+        )
+    except Exception:
+        return False
+
+
 def agent_auth_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        supplied = (
-            request.headers.get("X-Agent-Token")
-            or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-        )
-        if not AGENT_TOKEN or supplied != AGENT_TOKEN:
+        static = request.headers.get("X-Agent-Token", "").strip()
+        bearer = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+
+        static_ok = bool(AGENT_TOKEN and static and static == AGENT_TOKEN)
+        oidc_ok = _valid_github_oidc(bearer)
+        if not (static_ok or oidc_ok):
             return jsonify({"error": "unauthorized"}), 401
         return fn(*args, **kwargs)
     return wrapper
