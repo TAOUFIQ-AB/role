@@ -272,6 +272,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Start optional desktop tunnel
+        id: desktop-tunnel
         if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.enable_desktop) }}
         continue-on-error: true
         env:
@@ -292,6 +293,8 @@ jobs:
 
           if [ -n "$URL" ]; then
             echo "$URL" > /tmp/tunnel_url
+            HOST="${URL#https://}"
+            echo "host=$HOST" >> "$GITHUB_OUTPUT"
             echo "Desktop URL: $URL/" >> "$GITHUB_STEP_SUMMARY"
             echo "Desktop tunnel: $URL/"
             if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
@@ -314,6 +317,15 @@ jobs:
             echo "::warning::localhost.run did not provide a tunnel URL. The agent can still run normally."
             tail -80 /tmp/tunnel.log || true
           fi
+
+      - name: Publish live desktop URL
+        if: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.enable_desktop)) && steps.desktop-tunnel.outputs.host != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: live-desktop-${{ steps.desktop-tunnel.outputs.host }}
+          path: /tmp/tunnel_url
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Optional desktop pause
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_desktop && inputs.desktop_wait_minutes != '0' }}
