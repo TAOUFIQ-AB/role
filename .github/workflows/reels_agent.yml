@@ -53,7 +53,7 @@ permissions:
 
 concurrency:
   group: reels-ai-hunter-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   MIN_VIEWS: ${{ github.event_name == 'workflow_dispatch' && inputs.min_views || '50000' }}
@@ -237,14 +237,28 @@ jobs:
           nohup xpra start-desktop :99             --bind-tcp=0.0.0.0:8080,auth=env             --html=on             --start=fluxbox             --daemon=no             --opengl=no             --speaker=off             --microphone=off             --webcam=no             --printing=no             --file-transfer=no             > /tmp/xpra.log 2>&1 &
           echo $! > /tmp/xpra.pid
 
-          for _ in $(seq 1 30); do
-            if xpra info :99 >/dev/null 2>&1; then
-              echo "Xpra desktop is ready."
+          # Avoid "xpra info" here: it can block indefinitely if the server
+          # socket is half-started. Probe the HTML5 listener with a hard timeout.
+          XPRA_READY=false
+          for _ in $(seq 1 45); do
+            if curl -fsS --max-time 2 http://127.0.0.1:8080/ >/dev/null 2>&1; then
+              XPRA_READY=true
+              echo "Xpra desktop web server is ready."
               break
+            fi
+            if ! kill -0 "$(cat /tmp/xpra.pid)" 2>/dev/null; then
+              echo "::error::Xpra process exited before becoming ready."
+              tail -150 /tmp/xpra.log || true
+              exit 1
             fi
             sleep 1
           done
-          xpra info :99 >/dev/null 2>&1 || { tail -100 /tmp/xpra.log; exit 1; }
+
+          if [ "$XPRA_READY" != "true" ]; then
+            echo "::error::Xpra web server did not become ready on port 8080."
+            tail -150 /tmp/xpra.log || true
+            exit 1
+          fi
 
           # Open a terminal so the remote desktop has an obvious interactive window.
           DISPLAY=:99 nohup xterm >/tmp/xterm.log 2>&1 &
