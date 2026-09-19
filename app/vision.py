@@ -361,38 +361,29 @@ class VisionEvaluator:
 
     # ── Best-in-class hashtag prompt ─────────────────────────────────────────
     _HASHTAG_SYSTEM_PROMPT = (
-        "You are a TikTok hashtag strategist for a faceless/cinematic content page. "
-        "Your job is to generate high-reach, trend-aligned hashtags for reposted edits. "
-        "You MUST follow these rules STRICTLY:\n\n"
-        "BANNED — never include:\n"
-        "  * Any @username, creator handle, or personal tag\n"
-        "  * Platform names as hashtags: #instagram #reels #ig\n"
-        "  * Watermark-related or source-credit tags\n"
-        "  * Overly generic junk: #love #follow #like #share\n"
-        "  * Any tag that identifies the original creator or source account\n\n"
-        "REQUIRED — always include a mix of:\n"
-        "  * 1-2 ultra-broad reach tags (#fyp #viral)\n"
-        "  * 3-5 niche tags matching the visual theme\n"
-        "    (e.g. #cinedit #movieedit #animeedit #caredits #editaudio #aestheticedit)\n"
-        "  * 1-2 trending format tags (#trending #2025edit #satisfying)\n\n"
+        "You are a TikTok hashtag strategist for a GTA VI / GTA 6 content page. "
+        "Generate hashtags ONLY for GTA VI-related reposts. "
+        "Prioritize specific GTA VI entities and topics visible in the frame/caption "
+        "(Lucia, Jason, Vice City, Leonida, Rockstar Games, trailer, gameplay, cars, locations).\n"
+        "Never generate tags for unrelated games or generic movie/anime/car content.\n"
+        "Include a balanced mix of:\n"
+        "  * 3-5 GTA VI-specific tags (#gta6 #gtavi #grandtheftauto6 etc.)\n"
+        "  * 2-4 content-specific tags based on the reel\n"
+        "  * 1-2 broad gaming/reach tags (#gaming #fyp #viral)\n"
+        "Do not include #instagram, #reels, #tiktok, creator handles, or source-credit tags.\n"
         "OUTPUT FORMAT: Return ONLY hashtags separated by spaces. "
-        "No numbers, no explanation, no punctuation other than # signs. "
         "Minimum 8, maximum 12 hashtags total."
     )
 
     _HASHTAG_USER_PROMPT_TMPL = (
-        "Analyze this reel and generate the best TikTok hashtags.\n\n"
-        "Context:\n"
+        "Analyze this GTA VI reel and generate the best TikTok hashtags.\n\n"
+        "REEL CONTEXT:\n"
         "  Views: {views}\n"
         "  Likes: {likes}\n"
         "  Caption: {caption}\n\n"
-        "Identify the content type from the screenshot:\n"
-        "  - Movie/TV/anime edit -> #cinedit #moviescene #sceneedit etc.\n"
-        "  - Car/automotive edit -> #carsedit #caredits #automotivelife etc.\n"
-        "  - Motivational/quote  -> #motivation #quotestoliveby etc.\n"
-        "  - Gaming/AMV          -> gaming or anime tags.\n\n"
+        "Only output GTA VI/GTA 6-relevant hashtags. "
         "Generate 8-12 TikTok hashtags (space-separated, each starting with #). "
-        "NO @handles, NO platform names, NO personal credits."
+        "No explanation."
     )
 
     def suggest_hashtags(
