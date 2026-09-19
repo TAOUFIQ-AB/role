@@ -28,8 +28,8 @@ jobs:
         run: |
           set -euo pipefail
           echo "Stored chunk SHA-256 values:"
-          sha256sum .bootstrap/archive-{00..15}
-          cat .bootstrap/archive-{00..15} > /tmp/project.b64
+          sha256sum .bootstrap/archive-{00..09} .bootstrap/archive-10a .bootstrap/archive-10b .bootstrap/archive-{11..15}
+          cat .bootstrap/archive-{00..09} .bootstrap/archive-10a .bootstrap/archive-10b .bootstrap/archive-{11..15} > /tmp/project.b64
           base64 -d /tmp/project.b64 > /tmp/project.tar.gz
           echo "ca4b069d6fd04dc4fb5f713cc1971a9c1db99fa9ac64e22adf640cbc419756cf  /tmp/project.tar.gz" | sha256sum -c -
           mkdir -p /tmp/project
