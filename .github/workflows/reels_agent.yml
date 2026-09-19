@@ -1,8 +1,6 @@
 name: Reels AI Hunter
 
 on:
-  push:
-    branches: ["main"]
   schedule:
     - cron: "0 */4 * * *"
   workflow_dispatch:
@@ -53,7 +51,7 @@ permissions:
 
 concurrency:
   group: reels-ai-hunter-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   MIN_VIEWS: ${{ github.event_name == 'workflow_dispatch' && inputs.min_views || '50000' }}
@@ -62,7 +60,7 @@ env:
   TARGET_REELS_SCAN: ${{ github.event_name == 'workflow_dispatch' && inputs.target_reels || '35' }}
   MAX_RUNTIME_SECONDS: "2400"
   SHUTDOWN_BUFFER_SECONDS: "90"
-  PLAYWRIGHT_HEADLESS: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.enable_desktop)) && 'false' || 'true' }}
+  PLAYWRIGHT_HEADLESS: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_desktop && 'false' || 'true' }}
   GEMINI_MODEL: "gemini-3.8-flash"
   GEMINI_MAX_DIM: "720"
   GEMINI_WEB_ENABLED: "true"
@@ -139,7 +137,7 @@ jobs:
         env:
           INSTAGRAM_SESSION_COOKIES: ${{ secrets.INSTAGRAM_SESSION_COOKIES }}
           XPRA_PASSWORD: ${{ secrets.XPRA_PASSWORD }}
-          DESKTOP_REQUESTED: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.enable_desktop)) && 'true' || 'false' }}
+          DESKTOP_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_desktop && 'true' || 'false' }}
         run: |
           python - <<'PY'
           import os
@@ -207,7 +205,7 @@ jobs:
           python .github/scripts/validate_instagram_cookies.py
 
       - name: Start optional password-protected desktop
-        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.enable_desktop) }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_desktop }}
         env:
           XPRA_PASSWORD_SECRET: ${{ secrets.XPRA_PASSWORD }}
         run: |
@@ -272,7 +270,7 @@ jobs:
 
       - name: Start optional desktop tunnel
         id: desktop-tunnel
-        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.enable_desktop) }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_desktop }}
         continue-on-error: true
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -336,7 +334,7 @@ jobs:
           fi
 
       - name: Publish live desktop URL
-        if: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.enable_desktop)) && steps.desktop-tunnel.outputs.host != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_desktop && steps.desktop-tunnel.outputs.host != '' }}
         uses: actions/upload-artifact@v7
         with:
           name: live-desktop-${{ steps.desktop-tunnel.outputs.host }}
