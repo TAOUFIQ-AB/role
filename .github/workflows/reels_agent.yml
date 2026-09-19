@@ -280,18 +280,31 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           set -u
-          rm -f /tmp/tunnel.log /tmp/tunnel_url
-          ssh-keygen -q -t ed25519 -N "" -f /tmp/tunnel_key
-          nohup ssh -i /tmp/tunnel_key             -o StrictHostKeyChecking=no             -o ServerAliveInterval=30             -o ServerAliveCountMax=10             -R 80:localhost:8080             nokey@localhost.run             > /tmp/tunnel.log 2>&1 &
+          rm -f /tmp/tunnel.log /tmp/tunnel_url /tmp/cloudflared
+
+          echo "Installing Cloudflare quick-tunnel client..."
+          curl -fL --retry 3 --connect-timeout 10 \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o /tmp/cloudflared
+          chmod +x /tmp/cloudflared
+
+          nohup /tmp/cloudflared tunnel \
+            --url http://127.0.0.1:8080 \
+            --no-autoupdate \
+            > /tmp/tunnel.log 2>&1 &
+          echo $! > /tmp/tunnel.pid
 
           URL=""
-          for _ in $(seq 1 30); do
-            # Prefer the actual localhost.run public tunnel, not the admin/help URL.
-            URL="$(grep -Eo 'https://[A-Za-z0-9.-]+' /tmp/tunnel.log 2>/dev/null | grep -E '\.lhr\.life' | head -1 || true)"
-            if [ -z "$URL" ]; then
-              URL="$(grep -Eo 'https://[A-Za-z0-9.-]+' /tmp/tunnel.log 2>/dev/null | grep -E '\.localhost\.run' | grep -v 'https://admin\.localhost\.run' | head -1 || true)"
+          for _ in $(seq 1 45); do
+            URL="$(grep -Eo 'https://[A-Za-z0-9-]+\.trycloudflare\.com' /tmp/tunnel.log 2>/dev/null | head -1 || true)"
+            if [ -n "$URL" ]; then
+              break
             fi
-            [ -n "$URL" ] && break
+            if ! kill -0 "$(cat /tmp/tunnel.pid)" 2>/dev/null; then
+              echo "::error::cloudflared exited before producing a public URL."
+              tail -120 /tmp/tunnel.log || true
+              exit 1
+            fi
             sleep 1
           done
 
@@ -318,8 +331,9 @@ jobs:
           PY
             fi
           else
-            echo "::warning::localhost.run did not provide a tunnel URL. The agent can still run normally."
-            tail -80 /tmp/tunnel.log || true
+            echo "::error::Cloudflare quick tunnel did not provide a URL."
+            tail -120 /tmp/tunnel.log || true
+            exit 1
           fi
 
       - name: Publish live desktop URL
