@@ -62,9 +62,11 @@ env:
   MAX_RUNTIME_SECONDS: "2400"
   SHUTDOWN_BUFFER_SECONDS: "90"
   PLAYWRIGHT_HEADLESS: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_desktop && 'false' || 'true' }}
-  GEMINI_MODEL: "gemini-3.8-flash"
-  GEMINI_MAX_DIM: "720"
-  GEMINI_WEB_ENABLED: "true"
+  AI_PROVIDER_ORDER: "groq,openrouter"
+  GROQ_VISION_MODEL: "qwen/qwen3.6-27b"
+  AI_MAX_DIM: "720"
+  CONTROL_PANEL_URL: "https://review-dashboard-production-2dcd.up.railway.app"
+  CONTROL_PANEL_UPLOAD_VIDEO: "true"
   TELEGRAM_MAX_VIDEO_MB: "49"
   DB_PATH: "history.db"
   DOWNLOAD_DIR: "/tmp/reels_downloads"
@@ -179,18 +181,10 @@ jobs:
           mkdir -p /tmp/reels_downloads /tmp/reels_screenshots "$HOME/.secrets" artifacts
           chmod 700 "$HOME/.secrets"
 
-      - name: Write Google and TikTok cookie files
+      - name: Write TikTok cookie file
         env:
-          GEMINI_COOKIES: ${{ secrets.GEMINI_COOKIES }}
           TIKTOK_COOKIES: ${{ secrets.TIKTOK_COOKIES }}
         run: |
-          if [ -n "$GEMINI_COOKIES" ]; then
-            python .github/scripts/write_google_cookies.py
-            chmod 600 "$HOME/.secrets/gemini_cookies.json"
-          else
-            echo "GEMINI_COOKIES not set; Gemini Web cookie login is unavailable."
-          fi
-
           if [ -n "$TIKTOK_COOKIES" ]; then
             python .github/scripts/write_tt_cookies.py
             chmod 600 "$HOME/.secrets/tiktok_cookies.txt"
@@ -357,10 +351,9 @@ jobs:
           CAPTION_BLACKLIST: ${{ vars.CAPTION_BLACKLIST }}
           CAPTION_WHITELIST: ${{ vars.CAPTION_WHITELIST }}
 
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_COOKIES: ${{ secrets.GEMINI_COOKIES }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          CONTROL_PANEL_TOKEN: ${{ secrets.CONTROL_PANEL_TOKEN }}
           OLLAMA_BASE_URL: ${{ secrets.OLLAMA_BASE_URL }}
           OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL || 'llava' }}
           OLLAMA_TIMEOUT: "120"
