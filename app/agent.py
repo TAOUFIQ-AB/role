@@ -657,69 +657,23 @@ class InstagramAgent:
         except Exception as exc:
             self.log.warning(f"Startup tab TikTok failed (non-fatal): {exc}")
 
-        # Open Gemini in a new tab — inject cookies BEFORE first navigation
-        # so Google never sees an unauthenticated browser request.
-        try:
-            self.log.info("Startup tab: opening Gemini...")
-            gemini_page = ctx.new_page()
+        # Open the Railway review dashboard when configured.
+        if Config.CONTROL_PANEL_URL:
+            try:
+                self.log.info("Startup tab: opening Railway control panel...")
+                panel_page = ctx.new_page()
+                panel_page.goto(
+                    Config.CONTROL_PANEL_URL,
+                    wait_until="domcontentloaded",
+                    timeout=20_000,
+                )
+                self.log.info("Startup tab: control panel opened ✅")
+            except Exception as exc:
+                self.log.warning(
+                    f"Startup tab control panel failed (non-fatal): {exc}"
+                )
 
-            # ── Inject Gemini/Google cookies before any navigation ────────
-            if Config.GEMINI_COOKIES:
-                try:
-                    import json as _json
-                    from gemini_web_browser import _sanitize_cookie as _gc_sanitize
-                    raw = Config.GEMINI_COOKIES.strip()
-                    cookies = []
-                    try:
-                        parsed = _json.loads(raw)
-                        if isinstance(parsed, list):
-                            for c in parsed:
-                                if c.get("name"):
-                                    cookies.append(_gc_sanitize(c, ".google.com"))
-                    except Exception:
-                        for part in raw.replace(";", "\n").splitlines():
-                            part = part.strip()
-                            if "=" in part:
-                                k, _, v = part.partition("=")
-                                cookies.append(_gc_sanitize({
-                                    "name": k.strip(), "value": v.strip(),
-                                    "domain": ".google.com", "path": "/",
-                                    "secure": True, "httpOnly": False,
-                                }, ".google.com"))
-                    if cookies:
-                        ctx.add_cookies(cookies)
-                        self.log.info(f"Gemini: pre-injected {len(cookies)} cookies into context ✅")
-                    else:
-                        self.log.warning("Gemini: GEMINI_COOKIES set but no cookies parsed.")
-                except Exception as exc:
-                    self.log.warning(f"Gemini cookie pre-injection failed (non-fatal): {exc}")
-            else:
-                self.log.warning("Gemini: GEMINI_COOKIES not set — will attempt login fallback.")
-
-            # ── Now navigate (cookies already in context) ─────────────────
-            gemini_page.goto(
-                "https://gemini.google.com/app",
-                wait_until="domcontentloaded",
-                timeout=20_000,
-            )
-
-            # Store gemini page so GeminiWebBrowser can reuse it
-            self._gemini_page = gemini_page
-            self.log.info("Startup tab: Gemini opened ✅")
-        except Exception as exc:
-            self.log.warning(f"Startup tab Gemini failed (non-fatal): {exc}")
-            self._gemini_page = None
-
-        # Give the GeminiWebBrowser access to the shared context
-        if getattr(self.vision, '_gemini_web_browser', None):
-            self.vision._gemini_web_browser.set_context(ctx)
-            self.log.info("GeminiWebBrowser: shared browser context injected ✅")
-            # Pass the existing Gemini page so it never opens a new tab
-            if self._gemini_page is not None:
-                self.vision._gemini_web_browser.set_page(self._gemini_page)
-                self.log.info("GeminiWebBrowser: existing Gemini page injected ✅")
-
-        self.log.info("✅ All startup tabs opened: Instagram | TikTok | Gemini")
+        self.log.info("✅ Startup tabs opened: Instagram | TikTok | Control Panel")
 
     def setup(self) -> bool:
         self.log.info("\n" + Config.summary())
@@ -753,7 +707,7 @@ class InstagramAgent:
         # ── Telegram connectivity check ────────────────────────────────────────
         self.notifier.test_connection()
 
-        # ── Open Instagram, TikTok, and Gemini tabs instantly on startup ──────
+        # ── Open Instagram, TikTok, and review dashboard tabs ─────────────────
         self._open_startup_tabs()
 
         try:
@@ -1717,19 +1671,27 @@ class InstagramAgent:
 
         self._poller.start()
 
-        # ── Gemini startup self-test ───────────────────────────────────────
-        gemini_ok, gemini_msg = self.vision.test_gemini()
-        if gemini_ok:
-            self.log.info(f"Gemini self-test PASSED: {gemini_msg}")
+        # ── Free AI startup self-test ───────────────────────────────────────
+        ai_ok, ai_msg = self.vision.test_ai()
+        if ai_ok:
+            self.log.info(f"Free AI self-test PASSED: {ai_msg}")
         else:
-            self.log.error(f"Gemini self-test FAILED: {gemini_msg}")
+            self.log.error(f"Free AI self-test FAILED: {ai_msg}")
+
+        self.control.heartbeat(
+            state="starting",
+            hunting=False,
+            paused=False,
+            ai_ok=ai_ok,
+            ai_message=ai_msg,
+        )
 
         self.notifier.send_message(
             "🤖 <b>Reels Hunter online</b>\n"
-            f"{'✅' if gemini_ok else '❌'} Gemini: {gemini_msg}\n\n"
+            f"{'✅' if ai_ok else '❌'} Free AI: {ai_msg}\n\n"
             f"⚙️ Views ≥ <b>{Config.MIN_VIEWS:,}</b>  |  "
             f"Likes ≥ <b>{Config.MIN_LIKES:,}</b>\n"
-            "Type /help for available commands.\n"
+            "Dashboard controls are enabled when the Railway panel is configured.\n"
             "Starting initial hunt..."
         )
 
@@ -1743,8 +1705,9 @@ class InstagramAgent:
                 self.log.info("ONE_SHOT=true — exiting after initial hunt.")
                 return
 
-            self.log.info("Entering command loop — waiting for Telegram commands...")
+            self.log.info("Entering command loop — waiting for Telegram/Railway controls...")
             while not self._stop:
+                self._sync_control_commands()
                 if self._deadline_approaching():
                     self.log.warning("Deadline reached in command loop — shutting down.")
                     break
