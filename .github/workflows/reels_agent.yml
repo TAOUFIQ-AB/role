@@ -49,6 +49,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: reels-ai-hunter-${{ github.ref }}
@@ -353,6 +354,7 @@ jobs:
 
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # Optional static fallback. GitHub OIDC is the default auth path.
           CONTROL_PANEL_TOKEN: ${{ secrets.CONTROL_PANEL_TOKEN }}
           OLLAMA_BASE_URL: ${{ secrets.OLLAMA_BASE_URL }}
           OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL || 'llava' }}
