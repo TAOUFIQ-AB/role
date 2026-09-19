@@ -23,6 +23,9 @@ from gemini_web_browser import GeminiWebBrowser
 class VisionEvaluator:
     _GEMINI_PROMPT = (
         "You are a strict binary visual relevance + repost-safety filter for a GTA 6 content page.\n\n"
+        "The supplied image may be a 3-frame contact sheet showing EARLY, MIDDLE, and LATE "
+        "moments from the same reel from left to right. Judge the reel using all visible frames, "
+        "not just one panel.\n\n"
         "OUTPUT 'PASSED' ONLY IF BOTH CONDITIONS ARE TRUE:\n"
         "1. The frame is clearly about GTA VI / GTA 6 / Grand Theft Auto VI. "
         "Strong evidence includes GTA VI branding, recognizable official trailer/game imagery, "
