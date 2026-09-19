@@ -18,6 +18,7 @@ import logging
 import re
 import time
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import quote_plus
 
 from playwright.sync_api import (
     Page,
@@ -877,6 +878,222 @@ class ReelCollector:
         return False
 
     # ── Reel URL collection ───────────────────────────────────────────────────
+
+    def navigate_to_search_results(self, query: str, notifier=None) -> bool:
+        """
+        Open Instagram's keyword-search page for one query.
+
+        This deliberately uses the Search/Explore keyword surface rather than
+        the personalized Reels feed, so discovery stays focused on the target
+        topic (GTA 6 by default).
+        """
+        query = (query or "").strip()
+        if not query:
+            return False
+
+        url = f"{Config.INSTAGRAM_SEARCH_URL}?q={quote_plus(query)}"
+        self.log.info("Instagram search: %r -> %s", query, url)
+
+        try:
+            self._page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            self._bm.delay(2500, 4000)
+            self.dismiss_popups()
+
+            landed = self._page.url
+            if "accounts/login" in landed or "/login" in landed:
+                self.log.error("Instagram search redirected to login — cookies are expired/invalid.")
+                if notifier:
+                    notifier.send_message(
+                        "🔴 <b>Instagram session expired</b>\n"
+                        "Search redirected to the login page. Refresh "
+                        "<code>INSTAGRAM_SESSION_COOKIES</code>."
+                    )
+                return False
+
+            # Wait for the search results surface. A results grid can contain
+            # anchors before images/videos finish loading, so links are the
+            # strongest readiness signal.
+            ready = False
+            deadline = time.time() + 15
+            while time.time() < deadline:
+                try:
+                    reel_links = self._page.query_selector_all(
+                        "a[href*='/reel/'], a[href*='/reels/']"
+                    )
+                    main = self._page.query_selector("main")
+                    if reel_links or (main and main.is_visible()):
+                        ready = True
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.4)
+
+            if not ready:
+                self.log.warning("Search page did not become ready for %r", query)
+                return False
+
+            if notifier:
+                try:
+                    snap = self._page.screenshot(type="jpeg", quality=65)
+                    notifier.send_debug(
+                        f"🔎 <b>Instagram search</b>\n"
+                        f"Query: <code>{query}</code>\n"
+                        f"URL: <code>{self._page.url}</code>",
+                        snap,
+                    )
+                except Exception as exc:
+                    self.log.debug("Search snapshot failed: %s", exc)
+
+            return True
+
+        except PlaywrightError as exc:
+            self.log.warning("Search navigation failed for %r: %s", query, exc)
+            return False
+        except Exception as exc:
+            self.log.warning("Search navigation unexpected error for %r: %s", query, exc)
+            return False
+
+    def collect_search_reel_urls(
+        self,
+        notifier=None,
+        stop_fn=None,
+        drain_fn=None,
+    ) -> List[str]:
+        """
+        Discover Reels from Instagram keyword-search results.
+
+        Queries come from Config.INSTAGRAM_SEARCH_QUERIES. Only /reel/ or
+        /reels/ URLs are collected, so static /p/ search results are ignored.
+        """
+        seen: set[str] = set()
+        collected: List[str] = []
+
+        queries = Config.INSTAGRAM_SEARCH_QUERIES or ["GTA 6"]
+        self.log.info(
+            "Search-first discovery: queries=%s target=%d",
+            queries,
+            Config.TARGET_REELS_SCAN,
+        )
+
+        def _scrape_visible_reels() -> int:
+            before = len(collected)
+            selectors = (
+                "a[href*='/reel/']",
+                "a[href*='/reels/']",
+            )
+            for sel in selectors:
+                try:
+                    for link in self._page.query_selector_all(sel):
+                        try:
+                            href = link.get_attribute("href") or ""
+                            if not href:
+                                continue
+                            full = (
+                                f"https://www.instagram.com{href}"
+                                if href.startswith("/")
+                                else href
+                            )
+                            full = full.split("?")[0].rstrip("/") + "/"
+                            # Search discovery intentionally excludes generic /p/
+                            # posts: the user asked for GTA 6 videos/Reels.
+                            if (
+                                full not in seen
+                                and re.search(
+                                    r"instagram\.com/reels?/[A-Za-z0-9_-]{8,}",
+                                    full,
+                                )
+                            ):
+                                seen.add(full)
+                                collected.append(full)
+                                self.log.info(
+                                    "[%d/%d] Search reel: %s",
+                                    len(collected),
+                                    Config.TARGET_REELS_SCAN,
+                                    self.extract_reel_id(full),
+                                )
+                                if len(collected) >= Config.TARGET_REELS_SCAN:
+                                    return len(collected) - before
+                        except Exception as exc:
+                            self.log.debug("Search result link read failed: %s", exc)
+                except Exception as exc:
+                    self.log.debug("Search selector %r failed: %s", sel, exc)
+            return len(collected) - before
+
+        for q_index, query in enumerate(queries, start=1):
+            if len(collected) >= Config.TARGET_REELS_SCAN:
+                break
+
+            if drain_fn is not None:
+                try:
+                    drain_fn()
+                except Exception:
+                    pass
+            if stop_fn is not None and stop_fn():
+                break
+
+            if not self.navigate_to_search_results(query, notifier=notifier):
+                continue
+
+            stagnant_scrolls = 0
+            for scroll_idx in range(Config.SEARCH_SCROLLS_PER_QUERY):
+                if len(collected) >= Config.TARGET_REELS_SCAN:
+                    break
+
+                if drain_fn is not None:
+                    try:
+                        drain_fn()
+                    except Exception:
+                        pass
+                if stop_fn is not None and stop_fn():
+                    self.log.info("/skip received during search discovery.")
+                    return collected
+
+                added = _scrape_visible_reels()
+                if added:
+                    stagnant_scrolls = 0
+                else:
+                    stagnant_scrolls += 1
+
+                if len(collected) >= Config.TARGET_REELS_SCAN:
+                    break
+
+                # Scroll the actual search grid rather than switching into the
+                # personalized Reels feed.
+                try:
+                    self._page.mouse.wheel(0, max(900, Config.VIEWPORT_H))
+                except Exception:
+                    try:
+                        self._page.evaluate(
+                            "() => window.scrollBy(0, Math.max(900, window.innerHeight))"
+                        )
+                    except Exception:
+                        pass
+                self._bm.delay(900, 1600)
+
+                # Three no-progress scrolls usually means that query is exhausted.
+                if stagnant_scrolls >= 3:
+                    self.log.info(
+                        "Search query %r exhausted after %d scroll(s).",
+                        query,
+                        scroll_idx + 1,
+                    )
+                    break
+
+            if notifier:
+                try:
+                    notifier.send_message(
+                        f"🔎 Search {q_index}/{len(queries)}: "
+                        f"<b>{query}</b> — {len(collected)} reel(s) collected"
+                    )
+                except Exception:
+                    pass
+
+        self.log.info(
+            "Search-first discovery complete: %d GTA 6 Reel URL(s).",
+            len(collected),
+        )
+        return collected
+
 
     def collect_reel_urls(self, notifier=None, stop_fn=None, drain_fn=None) -> List[str]:
         """
