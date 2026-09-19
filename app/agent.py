@@ -83,6 +83,7 @@ class RunStats:
     """
     scanned:         int = 0   # total reels pulled from queue
     sent:            int = 0   # successfully sent to Telegram
+    pending_review:  int = 0   # waiting for dashboard approval
     skipped_thresh:  int = 0   # below view/like threshold
     skipped_caption: int = 0   # rejected by caption blacklist
     skipped_vision:  int = 0   # rejected by Gemini / pixel check
@@ -96,6 +97,8 @@ class RunStats:
         self.scanned += 1
         if task.status == ReelStatus.DOWNLOADED:
             self.sent += 1
+        elif task.status == ReelStatus.REVIEW:
+            self.pending_review += 1
         elif task.status == ReelStatus.FAILED:
             kind = task.failure_kind
             if kind == FailureKind.DOWNLOAD:
@@ -122,6 +125,7 @@ class RunStats:
             "── This run ──────────────────",
             f"🔍 Scanned        : {self.scanned}",
             f"✅ Sent           : {self.sent}",
+            f"🟡 Pending review : {self.pending_review}",
             f"⏭ Below threshold: {self.skipped_thresh}",
             f"📝 Caption filter : {self.skipped_caption}",
             f"👁 Vision rejected: {self.skipped_vision}",
@@ -149,6 +153,7 @@ class RunStats:
             "<b>This session</b>",
             f"Scanned         : {self.scanned}",
             f"Sent            : {self.sent}",
+            f"Pending review  : {self.pending_review}",
             f"Below threshold : {self.skipped_thresh}",
             f"Caption filter  : {self.skipped_caption}",
             f"Vision rejected : {self.skipped_vision}",
@@ -160,6 +165,7 @@ class RunStats:
     def log_summary(self) -> str:
         return (
             f"scanned={self.scanned} sent={self.sent} "
+            f"pending_review={self.pending_review} "
             f"thresh_skip={self.skipped_thresh} caption_skip={self.skipped_caption} "
             f"vision_skip={self.skipped_vision} dl_fail={self.download_fail} "
             f"send_fail={self.send_fail} errors={self.errors}"
@@ -734,6 +740,7 @@ class InstagramAgent:
         force: bool = False,
         skip_vision: bool = False,
         collect_ai_tags: bool = False,
+        approved_review: bool = False,
     ) -> None:
         """
         Drive one ReelTask through the full pipeline.
@@ -997,6 +1004,26 @@ class InstagramAgent:
             metrics_confidence=metrics_confidence,
         )
 
+        if (
+            self.control.enabled
+            and Config.CONTROL_PANEL_REVIEW_REQUIRED
+            and not approved_review
+        ):
+            task.mark_review("Pending dashboard approval")
+            self.db.mark_processed(
+                reel_id,
+                reel_url,
+                "pending_review",
+                views,
+                likes,
+                "dashboard_approval_required",
+            )
+            self.log.info(
+                f"[{reel_id}] Waiting for dashboard approval before delivery."
+            )
+            run_stats.record(task)
+            return
+
         # ── 7. Register pending BEFORE Telegram upload (crash-safety) ─────────
         try:
             self.db.add_pending_upload(reel_id, reel_url, video_path, views, likes)
@@ -1111,6 +1138,10 @@ class InstagramAgent:
                 self._cmd_queue.put({"cmd": "/stop", "arg": ""})
             elif command == "skip":
                 self._cmd_queue.put({"cmd": "/skip", "arg": ""})
+            elif command == "approve":
+                url = str(payload.get("reel_url") or "").strip()
+                if url:
+                    self._cmd_queue.put({"cmd": "__approve__", "arg": url})
             elif command == "config":
                 mapping = (
                     ("min_views", "/setviews"),
@@ -1186,7 +1217,7 @@ class InstagramAgent:
                 break
 
             cmd = item["cmd"]
-            if defer_hunt_cmds and cmd in ("__hunt__", "__test__", "__testsetup__", "__post__"):
+            if defer_hunt_cmds and cmd in ("__hunt__", "__test__", "__testsetup__", "__post__", "__approve__"):
                 deferred.append(item)
                 continue
 
@@ -1311,6 +1342,7 @@ class InstagramAgent:
             # Merge run stats into session totals
             self.session_stats.scanned         += run_stats.scanned
             self.session_stats.sent            += run_stats.sent
+            self.session_stats.pending_review  += run_stats.pending_review
             self.session_stats.skipped_thresh  += run_stats.skipped_thresh
             self.session_stats.skipped_caption += run_stats.skipped_caption
             self.session_stats.skipped_vision  += run_stats.skipped_vision
@@ -1327,6 +1359,32 @@ class InstagramAgent:
                     self.db.end_run(run_id, run_stats.scanned, run_stats.sent, "completed")
             except Exception as exc:
                 self.log.warning(f"Could not finalise hunt record: {exc}")
+
+    # ── Dashboard-approved delivery ──────────────────────────────────────────
+
+    def _run_approved_review(self, url: str) -> None:
+        reel_id = ReelCollector.extract_reel_id(url)
+        if not reel_id:
+            self.log.warning("Dashboard approval had invalid reel URL: %s", url)
+            return
+
+        self.log.info("Dashboard APPROVED %s — delivering now.", reel_id)
+        task = ReelTask(url=url, reel_id=reel_id, max_attempts=1)
+        stats = RunStats()
+        self._process_task(
+            task,
+            stats,
+            force=True,
+            skip_vision=True,
+            approved_review=True,
+        )
+        if task.status == ReelStatus.DOWNLOADED:
+            self._report_control_review(
+                task,
+                review_status="approved",
+                ai_decision="PASSED",
+                ai_reason="Human approved and delivery completed",
+            )
 
     # ── Force-test a single reel ──────────────────────────────────────────────
 
@@ -1472,6 +1530,7 @@ class InstagramAgent:
             f"<b>Session stats</b>\n"
             f"  Scanned         : {s_st.scanned}\n"
             f"  Sent            : {s_st.sent}\n"
+            f"  Pending review  : {s_st.pending_review}\n"
             f"  Below threshold : {s_st.skipped_thresh}\n"
             f"  Caption filter  : {s_st.skipped_caption}\n"
             f"  Vision rejected : {s_st.skipped_vision}\n"
@@ -1770,6 +1829,18 @@ class InstagramAgent:
                         tb = traceback.format_exc()
                         self.log.error(f"Test setup exception:\n{tb}")
                         self._poller.reply(f"❌ Test setup crashed:\n<pre>{tb[:400]}</pre>")
+
+                elif cmd == "__approve__":
+                    try:
+                        self._run_approved_review(arg)
+                    except KeyboardInterrupt:
+                        raise
+                    except Exception:
+                        tb = traceback.format_exc()
+                        self.log.error(f"Approved delivery exception:\n{tb}")
+                        self._poller.reply(
+                            f"❌ Approved delivery crashed:\n<pre>{tb[:400]}</pre>"
+                        )
 
                 elif cmd == "__post__":
                     try:
