@@ -159,7 +159,16 @@ The Docker image is based on the Playwright 1.63.0 Ubuntu Noble image and instal
 docker build -t reels-hunter .
 mkdir -p data
 
-docker run --rm -it   -p 8080:8080   -v "$(pwd)/data:/data"   -e DB_PATH=/data/history.db   -e XPRA_PASSWORD='choose-a-strong-password'   -e INSTAGRAM_SESSION_COOKIES='sessionid=...; csrftoken=...; ds_user_id=...'   -e GEMINI_API_KEY='...'   -e TELEGRAM_BOT_TOKEN='...'   -e TELEGRAM_CHAT_ID='...'   reels-hunter
+docker run --rm -it \
+  -p 8080:8080 \
+  -v "$(pwd)/data:/data" \
+  -e DB_PATH=/data/history.db \
+  -e XPRA_PASSWORD='choose-a-strong-password' \
+  -e INSTAGRAM_SESSION_COOKIES='sessionid=...; csrftoken=...; ds_user_id=...' \
+  -e GEMINI_API_KEY='...' \
+  -e TELEGRAM_BOT_TOKEN='...' \
+  -e TELEGRAM_CHAT_ID='...' \
+  reels-hunter
 ```
 
 Open `http://localhost:8080/` and authenticate with `XPRA_PASSWORD`. The container refuses to start the remotely accessible HTML5 desktop without an explicit password.
