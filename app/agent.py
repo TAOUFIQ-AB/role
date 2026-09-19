@@ -1471,6 +1471,10 @@ class InstagramAgent:
         try:
             self._run_hunt()
 
+            if Config.ONE_SHOT:
+                self.log.info("ONE_SHOT=true — exiting after initial hunt.")
+                return
+
             self.log.info("Entering command loop — waiting for Telegram commands...")
             while not self._stop:
                 if self._deadline_approaching():
