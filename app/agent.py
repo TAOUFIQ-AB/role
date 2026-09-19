@@ -47,6 +47,7 @@ from downloader import download_reel
 from pipeline import WorkQueue, ReelTask, ReelStatus, FailureKind
 from tiktok_poster import TikTokPoster
 from b2_uploader import B2Uploader
+from control_panel import ControlPanelClient
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -407,12 +408,8 @@ class InstagramAgent:
         self.notifier = NotificationService(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID)
         self.tiktok   = TikTokPoster()
         self.b2       = B2Uploader()
+        self.control  = ControlPanelClient()
         self.wq       = WorkQueue()
-
-        # Give vision access to the notifier so Gemini Web screenshots go to Telegram
-        self.vision._notifier = self.notifier
-        if getattr(self.vision, '_gemini_web_browser', None):
-            self.vision._gemini_web_browser.set_notifier(self.notifier)
 
         self.collector: Optional[ReelCollector] = None
 
@@ -425,7 +422,9 @@ class InstagramAgent:
 
         self._stop    = False
         self._hunting = False
+        self._paused  = False
         self._skip_collection = False
+        self._last_control_heartbeat = 0.0
 
         self._cmd_queue: queue.Queue = queue.Queue()
         self._poller = TelegramCommandPoller(
