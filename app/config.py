@@ -44,12 +44,14 @@ class Config:
         q.strip()
         for q in os.environ.get(
             "INSTAGRAM_SEARCH_QUERIES",
-            "GTA 6,GTA VI,GTA 6 trailer,GTA 6 Lucia,GTA 6 Vice City,GTA 6 gameplay,GTA 6 edit",
+            "GTA 6,GTA VI,Grand Theft Auto VI,GTA 6 trailer 2,GTA 6 Rockstar,GTA 6 Lucia,GTA 6 Jason,GTA 6 Vice City,GTA 6 Leonida,GTA 6 gameplay,GTA 6 edit",
         ).split(",")
         if q.strip()
     ]
     SEARCH_SCROLLS_PER_QUERY: int = _env_int("SEARCH_SCROLLS_PER_QUERY", 10, 1)
-    SEARCH_MAX_PER_QUERY: int = _env_int("SEARCH_MAX_PER_QUERY", 7, 1)
+    SEARCH_MAX_PER_QUERY: int = _env_int("SEARCH_MAX_PER_QUERY", 9, 1)
+    SEARCH_POOL_MULTIPLIER: int = _env_int("SEARCH_POOL_MULTIPLIER", 3, 1)
+    SEARCH_MIN_PER_QUERY: int = _env_int("SEARCH_MIN_PER_QUERY", 2, 0)
 
     # ── Viral thresholds ───────────────────────────────────────────────────────
     MIN_VIEWS: int = _env_int("MIN_VIEWS", 0, 0)
@@ -323,6 +325,8 @@ class Config:
             f"|  Search queries     : {', '.join(cls.INSTAGRAM_SEARCH_QUERIES)}",
             f"|  Search scrolls     : {cls.SEARCH_SCROLLS_PER_QUERY}/query",
             f"|  Search max/query   : {cls.SEARCH_MAX_PER_QUERY}",
+            f"|  Search pool x      : {cls.SEARCH_POOL_MULTIPLIER}",
+            f"|  Search min/query   : {cls.SEARCH_MIN_PER_QUERY}",
             f"|  Caption blacklist  : {len(cls.CAPTION_BLACKLIST)} words",
             f"|  Caption whitelist  : {len(cls.CAPTION_WHITELIST)} words",
             "+------------------------------------------------------------",
