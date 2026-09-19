@@ -1,0 +1,398 @@
+name: Reels AI Hunter
+
+on:
+  schedule:
+    - cron: "0 */4 * * *"
+  workflow_dispatch:
+    inputs:
+      min_views:
+        description: "Minimum view count (0 disables the view threshold)"
+        required: true
+        default: "50000"
+        type: string
+      min_likes:
+        description: "Minimum like count (0 disables the like threshold)"
+        required: true
+        default: "0"
+        type: string
+      max_reels:
+        description: "Maximum qualified reels to send"
+        required: true
+        default: "5"
+        type: string
+      target_reels:
+        description: "Maximum reels to scan"
+        required: true
+        default: "35"
+        type: string
+      tiktok_enabled:
+        description: "Auto-post successful Telegram deliveries to TikTok"
+        required: true
+        default: false
+        type: boolean
+      enable_desktop:
+        description: "Start an optional password-protected Xpra desktop + tunnel"
+        required: true
+        default: false
+        type: boolean
+      desktop_wait_minutes:
+        description: "Optional delay before the agent starts (desktop debug only)"
+        required: true
+        default: "0"
+        type: choice
+        options:
+          - "0"
+          - "2"
+          - "5"
+          - "10"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reels-ai-hunter-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  MIN_VIEWS: ${{ github.event_name == 'workflow_dispatch' && inputs.min_views || '50000' }}
+  MIN_LIKES: ${{ github.event_name == 'workflow_dispatch' && inputs.min_likes || '0' }}
+  MAX_QUALIFIED_SEND: ${{ github.event_name == 'workflow_dispatch' && inputs.max_reels || '5' }}
+  TARGET_REELS_SCAN: ${{ github.event_name == 'workflow_dispatch' && inputs.target_reels || '35' }}
+  MAX_RUNTIME_SECONDS: "2400"
+  SHUTDOWN_BUFFER_SECONDS: "90"
+  PLAYWRIGHT_HEADLESS: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_desktop && 'false' || 'true' }}
+  GEMINI_MODEL: "gemini-3.8-flash"
+  GEMINI_MAX_DIM: "720"
+  GEMINI_WEB_ENABLED: "true"
+  TELEGRAM_MAX_VIDEO_MB: "49"
+  DB_PATH: "history.db"
+  DOWNLOAD_DIR: "/tmp/reels_downloads"
+  SCREENSHOT_DIR: "/tmp/reels_screenshots"
+  VIEWPORT_W: "720"
+  VIEWPORT_H: "1280"
+  BROWSER_TIMEZONE: "UTC"
+  TIKTOK_ENABLED: ${{ github.event_name == 'workflow_dispatch' && inputs.tiktok_enabled && 'true' || 'false' }}
+  TIKTOK_HEADLESS: "true"
+  PYTHONUNBUFFERED: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  hunt:
+    name: Hunt and deliver reels
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Restore persistent history database
+        id: restore-history
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            history.db
+            history.db-wal
+            history.db-shm
+          key: reels-history-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            reels-history-${{ github.ref_name }}-
+
+      - name: Cache Playwright browser binaries
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-1.63.0
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip check
+
+      - name: Install Playwright Chromium and OS dependencies
+        run: |
+          python -m playwright install --with-deps chromium
+          python -m playwright --version
+
+          # GitHub-hosted Ubuntu includes Google Chrome. Use Playwright's
+          # supported `chrome` channel when it is present; otherwise fall back to
+          # the exact bundled Chromium installed above.
+          if command -v google-chrome >/dev/null 2>&1 || command -v google-chrome-stable >/dev/null 2>&1; then
+            echo "PLAYWRIGHT_BROWSER_CHANNEL=chrome" >> "$GITHUB_ENV"
+            (google-chrome --version || google-chrome-stable --version) 2>/dev/null || true
+            echo "Main browser channel: chrome"
+          else
+            echo "Main browser: Playwright bundled Chromium"
+          fi
+
+      - name: Validate workflow inputs and required configuration
+        env:
+          INSTAGRAM_SESSION_COOKIES: ${{ secrets.INSTAGRAM_SESSION_COOKIES }}
+          XPRA_PASSWORD: ${{ secrets.XPRA_PASSWORD }}
+          DESKTOP_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_desktop && 'true' || 'false' }}
+        run: |
+          python - <<'PY'
+          import os
+
+          numeric = {
+              "MIN_VIEWS": 0,
+              "MIN_LIKES": 0,
+              "MAX_QUALIFIED_SEND": 1,
+              "TARGET_REELS_SCAN": 1,
+          }
+          errors = []
+          for name, minimum in numeric.items():
+              raw = os.environ.get(name, "")
+              try:
+                  value = int(raw)
+                  if value < minimum:
+                      raise ValueError
+              except ValueError:
+                  errors.append(f"{name} must be an integer >= {minimum}; got {raw!r}")
+
+          if not os.environ.get("INSTAGRAM_SESSION_COOKIES", "").strip():
+              errors.append("INSTAGRAM_SESSION_COOKIES secret is required")
+
+          if os.environ.get("DESKTOP_REQUESTED") == "true" and not os.environ.get("XPRA_PASSWORD", "").strip():
+              errors.append("XPRA_PASSWORD secret is required when enable_desktop=true")
+
+          if errors:
+              print("Configuration errors:")
+              for error in errors:
+                  print(f"  - {error}")
+              raise SystemExit(2)
+          print("Configuration validation passed.")
+          PY
+
+      - name: Create runtime directories
+        run: |
+          mkdir -p /tmp/reels_downloads /tmp/reels_screenshots "$HOME/.secrets" artifacts
+          chmod 700 "$HOME/.secrets"
+
+      - name: Write Google and TikTok cookie files
+        env:
+          GEMINI_COOKIES: ${{ secrets.GEMINI_COOKIES }}
+          TIKTOK_COOKIES: ${{ secrets.TIKTOK_COOKIES }}
+        run: |
+          if [ -n "$GEMINI_COOKIES" ]; then
+            python .github/scripts/write_google_cookies.py
+            chmod 600 "$HOME/.secrets/gemini_cookies.json"
+          else
+            echo "GEMINI_COOKIES not set; Gemini Web cookie login is unavailable."
+          fi
+
+          if [ -n "$TIKTOK_COOKIES" ]; then
+            python .github/scripts/write_tt_cookies.py
+            chmod 600 "$HOME/.secrets/tiktok_cookies.txt"
+          elif [ "$TIKTOK_ENABLED" = "true" ]; then
+            echo "::warning::TikTok is enabled but TIKTOK_COOKIES is not set. Session/manual login fallback will be attempted if configured."
+          fi
+
+      - name: Validate Instagram cookies
+        env:
+          INSTAGRAM_SESSION_COOKIES: ${{ secrets.INSTAGRAM_SESSION_COOKIES }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python .github/scripts/validate_instagram_cookies.py
+
+      - name: Start optional password-protected desktop
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_desktop }}
+        env:
+          XPRA_PASSWORD_SECRET: ${{ secrets.XPRA_PASSWORD }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends             ca-certificates wget fluxbox xterm xdotool xclip openssh-client
+
+          sudo wget -qO /usr/share/keyrings/xpra.asc https://xpra.org/xpra.asc
+          sudo wget -qO /etc/apt/sources.list.d/xpra.sources             https://raw.githubusercontent.com/Xpra-org/xpra/master/packaging/repos/noble/xpra.sources
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends xpra xpra-html5
+
+          if [ -z "$XPRA_PASSWORD_SECRET" ]; then
+            echo "::error::XPRA_PASSWORD secret is required for the remote desktop."
+            exit 2
+          fi
+
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+          echo "WEB_PORT=8080" >> "$GITHUB_ENV"
+          echo "XPRA_PASSWORD=$XPRA_PASSWORD_SECRET" >> "$GITHUB_ENV"
+
+          export DISPLAY=:99
+          export XPRA_PASSWORD="$XPRA_PASSWORD_SECRET"
+          mkdir -p /tmp/xpra-runtime
+          chmod 700 /tmp/xpra-runtime
+
+          nohup xpra start-desktop :99             --bind-tcp=0.0.0.0:8080,auth=env             --html=on             --start=fluxbox             --daemon=no             --opengl=no             --speaker=off             --microphone=off             --webcam=no             --printing=no             --file-transfer=no             > /tmp/xpra.log 2>&1 &
+          echo $! > /tmp/xpra.pid
+
+          for _ in $(seq 1 30); do
+            if xpra info :99 >/dev/null 2>&1; then
+              echo "Xpra desktop is ready."
+              break
+            fi
+            sleep 1
+          done
+          xpra info :99 >/dev/null 2>&1 || { tail -100 /tmp/xpra.log; exit 1; }
+
+          # Open a terminal so the remote desktop has an obvious interactive window.
+          DISPLAY=:99 nohup xterm >/tmp/xterm.log 2>&1 &
+
+          {
+            echo "### Optional desktop"
+            echo "Xpra is running on display `:99` and local port `8080`."
+            echo "A public tunnel is attempted in the next step."
+            echo "Use the repository `XPRA_PASSWORD` secret as the desktop password."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Start optional desktop tunnel
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_desktop }}
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -u
+          rm -f /tmp/tunnel.log /tmp/tunnel_url
+          ssh-keygen -q -t ed25519 -N "" -f /tmp/tunnel_key
+          nohup ssh -i /tmp/tunnel_key             -o StrictHostKeyChecking=no             -o ServerAliveInterval=30             -o ServerAliveCountMax=10             -R 80:localhost:8080             nokey@localhost.run             > /tmp/tunnel.log 2>&1 &
+
+          URL=""
+          for _ in $(seq 1 30); do
+            URL="$(grep -Eo 'https://[A-Za-z0-9.-]+' /tmp/tunnel.log 2>/dev/null | grep -E '(lhr\.life|localhost\.run)' | head -1 || true)"
+            [ -n "$URL" ] && break
+            sleep 1
+          done
+
+          if [ -n "$URL" ]; then
+            echo "$URL" > /tmp/tunnel_url
+            echo "Desktop URL: $URL/" >> "$GITHUB_STEP_SUMMARY"
+            echo "Desktop tunnel: $URL/"
+            if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+              python - <<'PY'
+          import json, os, urllib.request
+          url = open('/tmp/tunnel_url').read().strip()
+          msg = f"🖥 GitHub Actions desktop\n{url}/\nUse the configured XPRA_PASSWORD secret."
+          req = urllib.request.Request(
+              f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage",
+              data=json.dumps({"chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": msg}).encode(),
+              headers={"Content-Type": "application/json"},
+          )
+          try:
+              urllib.request.urlopen(req, timeout=10).read()
+          except Exception as exc:
+              print(f"Telegram desktop notification failed: {exc}")
+          PY
+            fi
+          else
+            echo "::warning::localhost.run did not provide a tunnel URL. The agent can still run normally."
+            tail -80 /tmp/tunnel.log || true
+          fi
+
+      - name: Optional desktop pause
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_desktop && inputs.desktop_wait_minutes != '0' }}
+        run: |
+          echo "Pausing for ${{ inputs.desktop_wait_minutes }} minute(s) before starting the agent."
+          sleep "$(( ${{ inputs.desktop_wait_minutes }} * 60 ))"
+
+      - name: Run Reels AI Hunter agent
+        env:
+          INSTAGRAM_SESSION_COOKIES: ${{ secrets.INSTAGRAM_SESSION_COOKIES }}
+          USERS_ATTACK: ${{ vars.USERS_ATTACK }}
+          CAPTION_BLACKLIST: ${{ vars.CAPTION_BLACKLIST }}
+          CAPTION_WHITELIST: ${{ vars.CAPTION_WHITELIST }}
+
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_COOKIES: ${{ secrets.GEMINI_COOKIES }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OLLAMA_BASE_URL: ${{ secrets.OLLAMA_BASE_URL }}
+          OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL || 'llava' }}
+          OLLAMA_TIMEOUT: "120"
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+          TIKTOK_COOKIES: ${{ secrets.TIKTOK_COOKIES }}
+          TIKTOK_SESSION_COOKIES: ${{ secrets.TIKTOK_SESSION_COOKIES }}
+          TIKTOK_EMAIL: ${{ secrets.TIKTOK_EMAIL }}
+          TIKTOK_PASSWORD: ${{ secrets.TIKTOK_PASSWORD }}
+          TIKTOK_SECRET_UPDATE_TOKEN: ${{ secrets.TIKTOK_SECRET_UPDATE_TOKEN }}
+
+          B2_APPLICATION_KEY_ID: ${{ secrets.B2_APPLICATION_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+          B2_BUCKET_NAME: ${{ vars.B2_BUCKET_NAME || 'reels-hunter' }}
+
+          WEBSHARE_API_KEY: ${{ secrets.WEBSHARE_API_KEY }}
+          WEBSHARE_ENABLED: ${{ vars.WEBSHARE_ENABLED }}
+          WEBSHARE_PROXY_MODE: ${{ vars.WEBSHARE_PROXY_MODE || 'direct' }}
+
+        run: |
+          set -o pipefail
+          python app/agent.py 2>&1 | tee artifacts/agent.log
+
+      - name: Checkpoint SQLite database
+        if: always()
+        run: |
+          python - <<'PY'
+          import os, sqlite3
+          path = os.environ.get("DB_PATH", "history.db")
+          if os.path.exists(path):
+              try:
+                  conn = sqlite3.connect(path)
+                  conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                  conn.close()
+                  print(f"Checkpointed {path}")
+              except sqlite3.Error as exc:
+                  print(f"Database checkpoint warning: {exc}")
+          PY
+
+      - name: Collect diagnostics
+        if: always()
+        run: |
+          cp -f /tmp/xpra.log artifacts/xpra.log 2>/dev/null || true
+          cp -f /tmp/tunnel.log artifacts/tunnel.log 2>/dev/null || true
+          cp -f history.db artifacts/history.db 2>/dev/null || true
+          cp -rf /tmp/reels_screenshots artifacts/screenshots 2>/dev/null || true
+          if [ -d /tmp/playwright-traces ]; then
+            cp -rf /tmp/playwright-traces artifacts/playwright-traces
+          fi
+          find artifacts -maxdepth 3 -type f -printf '%p %k KB\n' 2>/dev/null | sort || true
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reels-hunter-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload downloaded reels left on disk
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reels-hunter-videos-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/reels_downloads/
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Save persistent history database
+        if: ${{ always() && hashFiles('history.db') != '' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            history.db
+            history.db-wal
+            history.db-shm
+          key: reels-history-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
