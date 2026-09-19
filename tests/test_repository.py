@@ -16,7 +16,6 @@ class RepositoryTests(unittest.TestCase):
     def test_main_workflow_scripts_exist(self):
         workflow = (ROOT / ".github" / "workflows" / "reels_agent.yml").read_text()
         for rel in (
-            ".github/scripts/write_google_cookies.py",
             ".github/scripts/write_tt_cookies.py",
             ".github/scripts/validate_instagram_cookies.py",
         ):
@@ -37,9 +36,11 @@ class RepositoryTests(unittest.TestCase):
 
     def test_current_provider_defaults_are_present(self):
         config = (ROOT / "app" / "config.py").read_text()
-        self.assertIn("gemini-3.8-flash", config)
+        self.assertIn("qwen/qwen3.6-27b", config)
         self.assertIn("openai/gpt-oss-120b", config)
         self.assertIn("openrouter/free", config)
+        self.assertIn('"groq,openrouter"', config)
+        self.assertNotIn("gemini-3.8-flash", config)
         self.assertNotIn("llama3-70b-8192", config)
 
     def test_docker_matches_pinned_playwright_version(self):
