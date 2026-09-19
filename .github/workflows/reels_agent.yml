@@ -1,9 +1,7 @@
-# debug-rerun: final-dashboard-groq-test
+# production: groq-dashboard-review
 name: Reels AI Hunter
 
 on:
-  push:
-    branches: ["main"]
   schedule:
     - cron: "0 */4 * * *"
   workflow_dispatch:
@@ -55,13 +53,13 @@ permissions:
 
 concurrency:
   group: reels-ai-hunter-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
-  MIN_VIEWS: ${{ github.event_name == 'push' && '0' || (github.event_name == 'workflow_dispatch' && inputs.min_views || '50000') }}
-  MIN_LIKES: "0"
-  MAX_QUALIFIED_SEND: ${{ github.event_name == 'push' && '2' || (github.event_name == 'workflow_dispatch' && inputs.max_reels || '5') }}
-  TARGET_REELS_SCAN: ${{ github.event_name == 'push' && '8' || (github.event_name == 'workflow_dispatch' && inputs.target_reels || '35') }}
+  MIN_VIEWS: ${{ github.event_name == 'workflow_dispatch' && inputs.min_views || '50000' }}
+  MIN_LIKES: ${{ github.event_name == 'workflow_dispatch' && inputs.min_likes || '0' }}
+  MAX_QUALIFIED_SEND: ${{ github.event_name == 'workflow_dispatch' && inputs.max_reels || '5' }}
+  TARGET_REELS_SCAN: ${{ github.event_name == 'workflow_dispatch' && inputs.target_reels || '35' }}
   MAX_RUNTIME_SECONDS: "2400"
   SHUTDOWN_BUFFER_SECONDS: "90"
   PLAYWRIGHT_HEADLESS: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_desktop && 'false' || 'true' }}
@@ -72,7 +70,7 @@ env:
   CONTROL_PANEL_UPLOAD_VIDEO: "true"
   CONTROL_PANEL_REVIEW_REQUIRED: "true"
   TELEGRAM_MAX_VIDEO_MB: "49"
-  DB_PATH: ${{ github.event_name == 'push' && '/tmp/history-final-dashboard-test.db' || 'history.db' }}
+  DB_PATH: "history.db"
   DOWNLOAD_DIR: "/tmp/reels_downloads"
   SCREENSHOT_DIR: "/tmp/reels_screenshots"
   VIEWPORT_W: "720"
