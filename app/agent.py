@@ -798,6 +798,17 @@ class InstagramAgent:
         task.views = views
         task.likes = likes
 
+        # Lightweight dashboard preview for every scanned candidate. Full video
+        # is uploaded only after the reel passes AI and reaches review.
+        dashboard_preview: Optional[bytes] = None
+        if self.control.enabled:
+            try:
+                dashboard_preview = _capture_reel_screenshot(page, reel_id)
+            except Exception as exc:
+                self.log.debug(
+                    f"[{reel_id}] Dashboard preview capture failed: {exc}"
+                )
+
         # ── 3. View / like threshold ──────────────────────────────────────────
         if not force:
             if Config.MIN_LIKES > 0 and likes < Config.MIN_LIKES:
@@ -809,6 +820,7 @@ class InstagramAgent:
                     task,
                     review_status="scanned",
                     ai_reason=reason,
+                    preview_bytes=dashboard_preview,
                     caption=caption,
                     metrics_source=metrics_source,
                     metrics_confidence=metrics_confidence,
@@ -820,6 +832,15 @@ class InstagramAgent:
                 task.mark_skipped(reason, FailureKind.PERMANENT)
                 self.log.info(f"[{reel_id}] SKIP: {reason}")
                 self.db.mark_processed(reel_id, reel_url, "skipped", views, likes, reason)
+                self._report_control_review(
+                    task,
+                    review_status="scanned",
+                    ai_reason=reason,
+                    preview_bytes=dashboard_preview,
+                    caption=caption,
+                    metrics_source=metrics_source,
+                    metrics_confidence=metrics_confidence,
+                )
                 run_stats.record(task)
                 return
 
@@ -838,6 +859,7 @@ class InstagramAgent:
                     task,
                     review_status="scanned",
                     ai_reason=reason,
+                    preview_bytes=dashboard_preview,
                     caption=caption,
                     metrics_source=metrics_source,
                     metrics_confidence=metrics_confidence,
