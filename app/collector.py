@@ -879,24 +879,94 @@ class ReelCollector:
 
     # ── Reel URL collection ───────────────────────────────────────────────────
 
+    def _open_search_via_ui(self, query: str) -> bool:
+        """
+        Use Instagram's visible Search UI when available, then open the keyword
+        results surface for the typed query. This keeps the remote desktop
+        understandable without relying only on direct URL navigation.
+        """
+        try:
+            self._page.goto(
+                "https://www.instagram.com/",
+                wait_until="domcontentloaded",
+                timeout=30_000,
+            )
+            self._bm.delay(1400, 2200)
+            self.dismiss_popups()
+
+            search_trigger = None
+            for sel in (
+                "a:has-text('Search')",
+                "[role='link']:has-text('Search')",
+                "[role='button']:has-text('Search')",
+                "[aria-label='Search']",
+                "svg[aria-label='Search']",
+            ):
+                try:
+                    candidate = self._page.query_selector(sel)
+                    if candidate and candidate.is_visible():
+                        search_trigger = candidate
+                        break
+                except Exception:
+                    pass
+
+            if search_trigger is None:
+                return False
+
+            search_trigger.click(timeout=5_000)
+            self._bm.delay(700, 1200)
+
+            input_selector = None
+            for sel in (
+                "input[placeholder='Search']",
+                "input[placeholder*='Search' i]",
+                "input[aria-label*='Search' i]",
+            ):
+                try:
+                    candidate = self._page.query_selector(sel)
+                    if candidate and candidate.is_visible():
+                        input_selector = sel
+                        break
+                except Exception:
+                    pass
+
+            if input_selector is None:
+                return False
+
+            self._page.fill(input_selector, query)
+            self._bm.delay(900, 1500)
+
+            result_url = f"{Config.INSTAGRAM_SEARCH_URL}?q={quote_plus(query)}"
+            self._page.goto(
+                result_url,
+                wait_until="domcontentloaded",
+                timeout=30_000,
+            )
+            return True
+
+        except Exception as exc:
+            self.log.info("Visible Search UI unavailable for %r: %s", query, exc)
+            return False
+
     def navigate_to_search_results(self, query: str, notifier=None) -> bool:
         """
-        Open Instagram's keyword-search page for one query.
-
-        This deliberately uses the Search/Explore keyword surface rather than
-        the personalized Reels feed, so discovery stays focused on the target
-        topic (GTA 6 by default).
+        Open Instagram Search for one query. Prefer the visible Search UI so the
+        Xpra session shows what the agent is doing; use the keyword URL as a
+        compatibility fallback.
         """
         query = (query or "").strip()
         if not query:
             return False
 
         url = f"{Config.INSTAGRAM_SEARCH_URL}?q={quote_plus(query)}"
-        self.log.info("Instagram search: %r -> %s", query, url)
+        self.log.info("Instagram search: %r", query)
 
         try:
-            self._page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-            self._bm.delay(2500, 4000)
+            used_ui = self._open_search_via_ui(query)
+            if not used_ui:
+                self._page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+
+            self._bm.delay(1600, 2400)
             self.dismiss_popups()
 
             landed = self._page.url
@@ -910,18 +980,15 @@ class ReelCollector:
                     )
                 return False
 
-            # Wait for the search results surface. A results grid can contain
-            # anchors before images/videos finish loading, so links are the
-            # strongest readiness signal.
             ready = False
             deadline = time.time() + 15
             while time.time() < deadline:
                 try:
-                    reel_links = self._page.query_selector_all(
-                        "a[href*='/reel/'], a[href*='/reels/']"
+                    result_links = self._page.query_selector_all(
+                        "main a[href*='/reel/'], main a[href*='/reels/'], main a[href*='/p/']"
                     )
                     main = self._page.query_selector("main")
-                    if reel_links or (main and main.is_visible()):
+                    if result_links or (main and main.is_visible()):
                         ready = True
                         break
                 except Exception:
@@ -938,7 +1005,8 @@ class ReelCollector:
                     notifier.send_debug(
                         f"🔎 <b>Instagram search</b>\n"
                         f"Query: <code>{query}</code>\n"
-                        f"URL: <code>{self._page.url}</code>",
+                        f"URL: <code>{self._page.url}</code>\n"
+                        f"Navigation: {'Search UI' if used_ui else 'keyword URL fallback'}",
                         snap,
                     )
                 except Exception as exc:
@@ -1120,18 +1188,17 @@ class ReelCollector:
                 if len(collected) >= Config.TARGET_REELS_SCAN:
                     break
 
-                # Scroll the actual search grid rather than switching into the
-                # personalized Reels feed.
+                # Keep scrolling visible and incremental on the remote desktop.
                 try:
-                    self._page.mouse.wheel(0, max(900, Config.VIEWPORT_H))
+                    self._page.mouse.wheel(0, max(600, int(Config.VIEWPORT_H * 0.65)))
                 except Exception:
                     try:
                         self._page.evaluate(
-                            "() => window.scrollBy(0, Math.max(900, window.innerHeight))"
+                            "() => window.scrollBy(0, Math.max(600, window.innerHeight * 0.65))"
                         )
                     except Exception:
                         pass
-                self._bm.delay(900, 1600)
+                self._bm.delay(700, 1200)
 
                 # Three no-progress scrolls usually means that query is exhausted.
                 if stagnant_scrolls >= 3:
