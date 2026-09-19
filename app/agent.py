@@ -983,21 +983,23 @@ class InstagramAgent:
             self.log.warning(f"Could not start run record: {exc}")
 
         try:
-            self.notifier.send_message("🔍 <b>Hunt started</b> — navigating Reels feed...")
+            search_terms = ", ".join(Config.INSTAGRAM_SEARCH_QUERIES)
+            self.notifier.send_message(
+                "🔎 <b>GTA 6 hunt started</b> — opening Instagram Search.\n"
+                f"<b>Queries:</b> <code>{search_terms}</code>"
+            )
 
-            if not self.collector.navigate_to_reels_feed(self.notifier):
-                self.notifier.send_message("❌ Hunt aborted: could not access Reels feed.")
-                return
-
-            reel_urls = self.collector.collect_reel_urls(
+            reel_urls = self.collector.collect_search_reel_urls(
                 self.notifier,
                 stop_fn=lambda: self._skip_collection,
                 drain_fn=lambda: self._drain_cmd_queue(defer_hunt_cmds=True),
             )
             self._skip_collection = False
             if not reel_urls:
-                self.log.warning("No Reel URLs collected.")
-                self.notifier.send_message("⚠️ No Reels found in this run.")
+                self.log.warning("No GTA 6 Reel URLs collected from Instagram search.")
+                self.notifier.send_message(
+                    "⚠️ No GTA 6 Reels found in Instagram Search for the configured queries."
+                )
                 return
 
             self.log.info(f"Processing {len(reel_urls)} URL(s)...")
@@ -1245,7 +1247,7 @@ class InstagramAgent:
             f"<b>Min Likes:</b> {Config.MIN_LIKES:,}\n"
             f"<b>Scan Target:</b> {Config.TARGET_REELS_SCAN}\n"
             f"<b>Max Send:</b> {Config.MAX_QUALIFIED_SEND}\n"
-            f"<b>Target accounts:</b> {', '.join(Config.USERS_ATTACK) or '(feed)'}\n"
+            f"<b>Search queries:</b> {', '.join(Config.INSTAGRAM_SEARCH_QUERIES)}\n"
             f"\n<b>Queue:</b> <code>{self.wq.stats()}</code>"
         )
 
