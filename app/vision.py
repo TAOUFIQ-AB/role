@@ -22,13 +22,21 @@ from gemini_web_browser import GeminiWebBrowser
 
 class VisionEvaluator:
     _GEMINI_PROMPT = (
-        "You are a strict binary visual filter. "
-        "Check this video frame for the following ONLY.\n\n"
-        "OUTPUT 'FAILED' IF ANY OF THESE ARE VISIBLE:\n"
-        "- Platform logos or watermarks (TikTok, Instagram, YouTube, etc.)\n"
-        "- Creator handles or usernames burned into the frame (e.g., @username)\n"
-        "- Any text overlay identifying the original source or creator\n\n"
-        "OUTPUT 'PASSED' if none of the above are present.\n\n"
+        "You are a strict binary visual relevance + repost-safety filter for a GTA 6 content page.\n\n"
+        "OUTPUT 'PASSED' ONLY IF BOTH CONDITIONS ARE TRUE:\n"
+        "1. The frame is clearly about GTA VI / GTA 6 / Grand Theft Auto VI. "
+        "Strong evidence includes GTA VI branding, recognizable official trailer/game imagery, "
+        "Lucia, Jason, Vice City/Leonida scenes, or unmistakable GTA VI-specific content.\n"
+        "2. The frame is clean enough to repost: no platform watermark, no creator username/handle, "
+        "and no text that identifies the original uploader/source.\n\n"
+        "OUTPUT 'FAILED' IF ANY OF THESE APPLY:\n"
+        "- It is GTA V, GTA Online, San Andreas, another GTA title, another game, or generic gaming footage.\n"
+        "- The frame is a meme, reaction, unrelated real-life clip, streamer face-cam, or ambiguous content "
+        "that cannot be confidently identified as GTA VI.\n"
+        "- TikTok, Instagram, YouTube, or another platform logo/watermark is visible.\n"
+        "- A creator handle/username or source-credit overlay is visible.\n\n"
+        "IMPORTANT: Official Rockstar Games or GTA VI logos/branding are allowed and should NOT be treated "
+        "as repost watermarks.\n\n"
         "CRITICAL: Reply with EXACTLY ONE WORD — 'PASSED' or 'FAILED'. Nothing else."
     )
 
