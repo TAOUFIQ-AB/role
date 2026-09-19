@@ -176,6 +176,7 @@ class Config:
     SHUTDOWN_BUFFER_SECONDS: int = _env_int("SHUTDOWN_BUFFER_SECONDS", 45, 0)
     TARGET_REELS_SCAN: int = _env_int("TARGET_REELS_SCAN", 35, 1)
     MAX_QUALIFIED_SEND: int = _env_int("MAX_QUALIFIED_SEND", 5, 1)
+    ONE_SHOT: bool = os.environ.get("ONE_SHOT", "false").strip().lower() == "true"
 
     # ── Retry / queue ──────────────────────────────────────────────────────────
     # How many times to retry a failed Telegram send (persisted across runs)
