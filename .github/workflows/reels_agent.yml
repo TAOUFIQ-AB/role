@@ -286,9 +286,14 @@ jobs:
 
           URL=""
           for _ in $(seq 1 30); do
-            # localhost.run prints an admin/help URL before the actual tunnel.
-            # Prefer the real lhr.life endpoint and explicitly reject admin.localhost.run.
-            URL="$(grep -Eo 'https://[A-Za-z0-9.-]+' /tmp/tunnel.log 2>/dev/null | grep -E '\.lhr\.life
+            # Prefer the actual localhost.run public tunnel, not the admin/help URL.
+            URL="$(grep -Eo 'https://[A-Za-z0-9.-]+' /tmp/tunnel.log 2>/dev/null | grep -E '\.lhr\.life' | head -1 || true)"
+            if [ -z "$URL" ]; then
+              URL="$(grep -Eo 'https://[A-Za-z0-9.-]+' /tmp/tunnel.log 2>/dev/null | grep -E '\.localhost\.run' | grep -v 'https://admin\.localhost\.run' | head -1 || true)"
+            fi
+            [ -n "$URL" ] && break
+            sleep 1
+          done
 
           if [ -n "$URL" ]; then
             echo "$URL" > /tmp/tunnel_url
