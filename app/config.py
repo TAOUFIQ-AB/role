@@ -37,6 +37,19 @@ class Config:
     INSTAGRAM_SESSION_COOKIES: str = os.environ.get("INSTAGRAM_SESSION_COOKIES", "")
     INSTAGRAM_REELS_URL: str = "https://www.instagram.com/reels/"
 
+    # Search-first discovery. The hunter intentionally searches Instagram for
+    # GTA 6 content instead of relying on whatever happens to be in the Reels feed.
+    INSTAGRAM_SEARCH_URL: str = "https://www.instagram.com/explore/search/keyword/"
+    INSTAGRAM_SEARCH_QUERIES: List[str] = [
+        q.strip()
+        for q in os.environ.get(
+            "INSTAGRAM_SEARCH_QUERIES",
+            "GTA 6,GTA VI,Grand Theft Auto VI,GTA 6 trailer,GTA 6 gameplay,GTA 6 edit",
+        ).split(",")
+        if q.strip()
+    ]
+    SEARCH_SCROLLS_PER_QUERY: int = _env_int("SEARCH_SCROLLS_PER_QUERY", 10, 1)
+
     # ── Viral thresholds ───────────────────────────────────────────────────────
     MIN_VIEWS: int = _env_int("MIN_VIEWS", 0, 0)
     MIN_LIKES: int = _env_int("MIN_LIKES", 0, 0)
@@ -144,7 +157,7 @@ class Config:
         h.strip().lstrip("#")
         for h in os.environ.get(
             "TIKTOK_HASHTAGS",
-            "fyp,viral,edit,trending,reels",
+            "gta6,gtavi,grandtheftauto6,rockstargames,vicecity,fyp,viral",
         ).split(",")
         if h.strip()
     ]
@@ -261,9 +274,9 @@ class Config:
         w.strip()
         for w in os.environ.get(
             "CAPTION_WHITELIST",
-            "Movie edit,Scene pack,Anime edit,Car community,M5 f10,"
-            "Sigma edit,Quote of the day,Relatable quotes,edit,cinematic,"
-            "aesthetic,motivation,fyp edit,car edit",
+            "GTA 6,GTA6,GTA VI,Grand Theft Auto VI,Grand Theft Auto 6,"
+            "Lucia,Jason,Leonida,Vice City,Rockstar Games,GTA 6 trailer,"
+            "GTA 6 gameplay,GTA 6 edit",
         ).split(",")
         if w.strip()
     ]
@@ -305,6 +318,8 @@ class Config:
             f"|  Chrome profile     : {cls.CHROME_PROFILE_DIR or chr(40)+chr(101)+chr(112)+chr(104)+chr(101)+chr(109)+chr(101)+chr(114)+chr(97)+chr(108)+chr(41)}",
             f"|  Cooldown initial   : {cls.PROVIDER_COOLDOWN_INITIAL}s  max={cls.PROVIDER_COOLDOWN_MAX}s",
             f"|  Target accounts    : {users_str}",
+            f"|  Search queries     : {', '.join(cls.INSTAGRAM_SEARCH_QUERIES)}",
+            f"|  Search scrolls     : {cls.SEARCH_SCROLLS_PER_QUERY}/query",
             f"|  Caption blacklist  : {len(cls.CAPTION_BLACKLIST)} words",
             f"|  Caption whitelist  : {len(cls.CAPTION_WHITELIST)} words",
             "+------------------------------------------------------------",
