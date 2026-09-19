@@ -286,7 +286,420 @@ jobs:
 
           URL=""
           for _ in $(seq 1 30); do
-            URL="$(grep -Eo 'https://[A-Za-z0-9.-]+' /tmp/tunnel.log 2>/dev/null | grep -E '(lhr\.life|localhost\.run)' | head -1 || true)"
+            # localhost.run prints an admin/help URL before the actual tunnel.
+            # Prefer the real lhr.life endpoint and explicitly reject admin.localhost.run.
+            URL="$(grep -Eo 'https://[A-Za-z0-9.-]+' /tmp/tunnel.log 2>/dev/null | grep -E '\.lhr\.life
+
+          if [ -n "$URL" ]; then
+            echo "$URL" > /tmp/tunnel_url
+            HOST="${URL#https://}"
+            echo "host=$HOST" >> "$GITHUB_OUTPUT"
+            echo "Desktop URL: $URL/" >> "$GITHUB_STEP_SUMMARY"
+            echo "Desktop tunnel: $URL/"
+            if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+              python - <<'PY'
+          import json, os, urllib.request
+          url = open('/tmp/tunnel_url').read().strip()
+          msg = f"🖥 GitHub Actions desktop\n{url}/\nUse the configured XPRA_PASSWORD secret."
+          req = urllib.request.Request(
+              f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage",
+              data=json.dumps({"chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": msg}).encode(),
+              headers={"Content-Type": "application/json"},
+          )
+          try:
+              urllib.request.urlopen(req, timeout=10).read()
+          except Exception as exc:
+              print(f"Telegram desktop notification failed: {exc}")
+          PY
+            fi
+          else
+            echo "::warning::localhost.run did not provide a tunnel URL. The agent can still run normally."
+            tail -80 /tmp/tunnel.log || true
+          fi
+
+      - name: Publish live desktop URL
+        if: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.enable_desktop)) && steps.desktop-tunnel.outputs.host != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: live-desktop-${{ steps.desktop-tunnel.outputs.host }}
+          path: /tmp/tunnel_url
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Optional desktop pause
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_desktop && inputs.desktop_wait_minutes != '0' }}
+        run: |
+          echo "Pausing for ${{ inputs.desktop_wait_minutes }} minute(s) before starting the agent."
+          sleep "$(( ${{ inputs.desktop_wait_minutes }} * 60 ))"
+
+      - name: Run Reels AI Hunter agent
+        env:
+          INSTAGRAM_SESSION_COOKIES: ${{ secrets.INSTAGRAM_SESSION_COOKIES }}
+          USERS_ATTACK: ${{ vars.USERS_ATTACK }}
+          CAPTION_BLACKLIST: ${{ vars.CAPTION_BLACKLIST }}
+          CAPTION_WHITELIST: ${{ vars.CAPTION_WHITELIST }}
+
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_COOKIES: ${{ secrets.GEMINI_COOKIES }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OLLAMA_BASE_URL: ${{ secrets.OLLAMA_BASE_URL }}
+          OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL || 'llava' }}
+          OLLAMA_TIMEOUT: "120"
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+          TIKTOK_COOKIES: ${{ secrets.TIKTOK_COOKIES }}
+          TIKTOK_SESSION_COOKIES: ${{ secrets.TIKTOK_SESSION_COOKIES }}
+          TIKTOK_EMAIL: ${{ secrets.TIKTOK_EMAIL }}
+          TIKTOK_PASSWORD: ${{ secrets.TIKTOK_PASSWORD }}
+          TIKTOK_SECRET_UPDATE_TOKEN: ${{ secrets.TIKTOK_SECRET_UPDATE_TOKEN }}
+
+          B2_APPLICATION_KEY_ID: ${{ secrets.B2_APPLICATION_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+          B2_BUCKET_NAME: ${{ vars.B2_BUCKET_NAME || 'reels-hunter' }}
+
+          WEBSHARE_API_KEY: ${{ secrets.WEBSHARE_API_KEY }}
+          WEBSHARE_ENABLED: ${{ vars.WEBSHARE_ENABLED }}
+          WEBSHARE_PROXY_MODE: ${{ vars.WEBSHARE_PROXY_MODE || 'direct' }}
+
+        run: |
+          set -o pipefail
+          python app/agent.py 2>&1 | tee artifacts/agent.log
+
+      - name: Checkpoint SQLite database
+        if: always()
+        run: |
+          python - <<'PY'
+          import os, sqlite3
+          path = os.environ.get("DB_PATH", "history.db")
+          if os.path.exists(path):
+              try:
+                  conn = sqlite3.connect(path)
+                  conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                  conn.close()
+                  print(f"Checkpointed {path}")
+              except sqlite3.Error as exc:
+                  print(f"Database checkpoint warning: {exc}")
+          PY
+
+      - name: Collect diagnostics
+        if: always()
+        run: |
+          cp -f /tmp/xpra.log artifacts/xpra.log 2>/dev/null || true
+          cp -f /tmp/tunnel.log artifacts/tunnel.log 2>/dev/null || true
+          cp -f history.db artifacts/history.db 2>/dev/null || true
+          cp -rf /tmp/reels_screenshots artifacts/screenshots 2>/dev/null || true
+          if [ -d /tmp/playwright-traces ]; then
+            cp -rf /tmp/playwright-traces artifacts/playwright-traces
+          fi
+          find artifacts -maxdepth 3 -type f -printf '%p %k KB\n' 2>/dev/null | sort || true
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reels-hunter-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload downloaded reels left on disk
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reels-hunter-videos-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/reels_downloads/
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Save persistent history database
+        if: ${{ always() && hashFiles('history.db') != '' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            history.db
+            history.db-wal
+            history.db-shm
+          key: reels-history-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+ | head -1 || true)"
+            if [ -z "$URL" ]; then
+              URL="$(grep -Eo 'https://[A-Za-z0-9.-]+' /tmp/tunnel.log 2>/dev/null | grep -E '\.localhost\.run
+
+          if [ -n "$URL" ]; then
+            echo "$URL" > /tmp/tunnel_url
+            HOST="${URL#https://}"
+            echo "host=$HOST" >> "$GITHUB_OUTPUT"
+            echo "Desktop URL: $URL/" >> "$GITHUB_STEP_SUMMARY"
+            echo "Desktop tunnel: $URL/"
+            if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+              python - <<'PY'
+          import json, os, urllib.request
+          url = open('/tmp/tunnel_url').read().strip()
+          msg = f"🖥 GitHub Actions desktop\n{url}/\nUse the configured XPRA_PASSWORD secret."
+          req = urllib.request.Request(
+              f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage",
+              data=json.dumps({"chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": msg}).encode(),
+              headers={"Content-Type": "application/json"},
+          )
+          try:
+              urllib.request.urlopen(req, timeout=10).read()
+          except Exception as exc:
+              print(f"Telegram desktop notification failed: {exc}")
+          PY
+            fi
+          else
+            echo "::warning::localhost.run did not provide a tunnel URL. The agent can still run normally."
+            tail -80 /tmp/tunnel.log || true
+          fi
+
+      - name: Publish live desktop URL
+        if: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.enable_desktop)) && steps.desktop-tunnel.outputs.host != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: live-desktop-${{ steps.desktop-tunnel.outputs.host }}
+          path: /tmp/tunnel_url
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Optional desktop pause
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_desktop && inputs.desktop_wait_minutes != '0' }}
+        run: |
+          echo "Pausing for ${{ inputs.desktop_wait_minutes }} minute(s) before starting the agent."
+          sleep "$(( ${{ inputs.desktop_wait_minutes }} * 60 ))"
+
+      - name: Run Reels AI Hunter agent
+        env:
+          INSTAGRAM_SESSION_COOKIES: ${{ secrets.INSTAGRAM_SESSION_COOKIES }}
+          USERS_ATTACK: ${{ vars.USERS_ATTACK }}
+          CAPTION_BLACKLIST: ${{ vars.CAPTION_BLACKLIST }}
+          CAPTION_WHITELIST: ${{ vars.CAPTION_WHITELIST }}
+
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_COOKIES: ${{ secrets.GEMINI_COOKIES }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OLLAMA_BASE_URL: ${{ secrets.OLLAMA_BASE_URL }}
+          OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL || 'llava' }}
+          OLLAMA_TIMEOUT: "120"
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+          TIKTOK_COOKIES: ${{ secrets.TIKTOK_COOKIES }}
+          TIKTOK_SESSION_COOKIES: ${{ secrets.TIKTOK_SESSION_COOKIES }}
+          TIKTOK_EMAIL: ${{ secrets.TIKTOK_EMAIL }}
+          TIKTOK_PASSWORD: ${{ secrets.TIKTOK_PASSWORD }}
+          TIKTOK_SECRET_UPDATE_TOKEN: ${{ secrets.TIKTOK_SECRET_UPDATE_TOKEN }}
+
+          B2_APPLICATION_KEY_ID: ${{ secrets.B2_APPLICATION_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+          B2_BUCKET_NAME: ${{ vars.B2_BUCKET_NAME || 'reels-hunter' }}
+
+          WEBSHARE_API_KEY: ${{ secrets.WEBSHARE_API_KEY }}
+          WEBSHARE_ENABLED: ${{ vars.WEBSHARE_ENABLED }}
+          WEBSHARE_PROXY_MODE: ${{ vars.WEBSHARE_PROXY_MODE || 'direct' }}
+
+        run: |
+          set -o pipefail
+          python app/agent.py 2>&1 | tee artifacts/agent.log
+
+      - name: Checkpoint SQLite database
+        if: always()
+        run: |
+          python - <<'PY'
+          import os, sqlite3
+          path = os.environ.get("DB_PATH", "history.db")
+          if os.path.exists(path):
+              try:
+                  conn = sqlite3.connect(path)
+                  conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                  conn.close()
+                  print(f"Checkpointed {path}")
+              except sqlite3.Error as exc:
+                  print(f"Database checkpoint warning: {exc}")
+          PY
+
+      - name: Collect diagnostics
+        if: always()
+        run: |
+          cp -f /tmp/xpra.log artifacts/xpra.log 2>/dev/null || true
+          cp -f /tmp/tunnel.log artifacts/tunnel.log 2>/dev/null || true
+          cp -f history.db artifacts/history.db 2>/dev/null || true
+          cp -rf /tmp/reels_screenshots artifacts/screenshots 2>/dev/null || true
+          if [ -d /tmp/playwright-traces ]; then
+            cp -rf /tmp/playwright-traces artifacts/playwright-traces
+          fi
+          find artifacts -maxdepth 3 -type f -printf '%p %k KB\n' 2>/dev/null | sort || true
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reels-hunter-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload downloaded reels left on disk
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reels-hunter-videos-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/reels_downloads/
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Save persistent history database
+        if: ${{ always() && hashFiles('history.db') != '' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            history.db
+            history.db-wal
+            history.db-shm
+          key: reels-history-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+ | grep -v '^https://admin\.localhost\.run
+
+          if [ -n "$URL" ]; then
+            echo "$URL" > /tmp/tunnel_url
+            HOST="${URL#https://}"
+            echo "host=$HOST" >> "$GITHUB_OUTPUT"
+            echo "Desktop URL: $URL/" >> "$GITHUB_STEP_SUMMARY"
+            echo "Desktop tunnel: $URL/"
+            if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+              python - <<'PY'
+          import json, os, urllib.request
+          url = open('/tmp/tunnel_url').read().strip()
+          msg = f"🖥 GitHub Actions desktop\n{url}/\nUse the configured XPRA_PASSWORD secret."
+          req = urllib.request.Request(
+              f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage",
+              data=json.dumps({"chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": msg}).encode(),
+              headers={"Content-Type": "application/json"},
+          )
+          try:
+              urllib.request.urlopen(req, timeout=10).read()
+          except Exception as exc:
+              print(f"Telegram desktop notification failed: {exc}")
+          PY
+            fi
+          else
+            echo "::warning::localhost.run did not provide a tunnel URL. The agent can still run normally."
+            tail -80 /tmp/tunnel.log || true
+          fi
+
+      - name: Publish live desktop URL
+        if: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.enable_desktop)) && steps.desktop-tunnel.outputs.host != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: live-desktop-${{ steps.desktop-tunnel.outputs.host }}
+          path: /tmp/tunnel_url
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Optional desktop pause
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_desktop && inputs.desktop_wait_minutes != '0' }}
+        run: |
+          echo "Pausing for ${{ inputs.desktop_wait_minutes }} minute(s) before starting the agent."
+          sleep "$(( ${{ inputs.desktop_wait_minutes }} * 60 ))"
+
+      - name: Run Reels AI Hunter agent
+        env:
+          INSTAGRAM_SESSION_COOKIES: ${{ secrets.INSTAGRAM_SESSION_COOKIES }}
+          USERS_ATTACK: ${{ vars.USERS_ATTACK }}
+          CAPTION_BLACKLIST: ${{ vars.CAPTION_BLACKLIST }}
+          CAPTION_WHITELIST: ${{ vars.CAPTION_WHITELIST }}
+
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_COOKIES: ${{ secrets.GEMINI_COOKIES }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OLLAMA_BASE_URL: ${{ secrets.OLLAMA_BASE_URL }}
+          OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL || 'llava' }}
+          OLLAMA_TIMEOUT: "120"
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+          TIKTOK_COOKIES: ${{ secrets.TIKTOK_COOKIES }}
+          TIKTOK_SESSION_COOKIES: ${{ secrets.TIKTOK_SESSION_COOKIES }}
+          TIKTOK_EMAIL: ${{ secrets.TIKTOK_EMAIL }}
+          TIKTOK_PASSWORD: ${{ secrets.TIKTOK_PASSWORD }}
+          TIKTOK_SECRET_UPDATE_TOKEN: ${{ secrets.TIKTOK_SECRET_UPDATE_TOKEN }}
+
+          B2_APPLICATION_KEY_ID: ${{ secrets.B2_APPLICATION_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+          B2_BUCKET_NAME: ${{ vars.B2_BUCKET_NAME || 'reels-hunter' }}
+
+          WEBSHARE_API_KEY: ${{ secrets.WEBSHARE_API_KEY }}
+          WEBSHARE_ENABLED: ${{ vars.WEBSHARE_ENABLED }}
+          WEBSHARE_PROXY_MODE: ${{ vars.WEBSHARE_PROXY_MODE || 'direct' }}
+
+        run: |
+          set -o pipefail
+          python app/agent.py 2>&1 | tee artifacts/agent.log
+
+      - name: Checkpoint SQLite database
+        if: always()
+        run: |
+          python - <<'PY'
+          import os, sqlite3
+          path = os.environ.get("DB_PATH", "history.db")
+          if os.path.exists(path):
+              try:
+                  conn = sqlite3.connect(path)
+                  conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                  conn.close()
+                  print(f"Checkpointed {path}")
+              except sqlite3.Error as exc:
+                  print(f"Database checkpoint warning: {exc}")
+          PY
+
+      - name: Collect diagnostics
+        if: always()
+        run: |
+          cp -f /tmp/xpra.log artifacts/xpra.log 2>/dev/null || true
+          cp -f /tmp/tunnel.log artifacts/tunnel.log 2>/dev/null || true
+          cp -f history.db artifacts/history.db 2>/dev/null || true
+          cp -rf /tmp/reels_screenshots artifacts/screenshots 2>/dev/null || true
+          if [ -d /tmp/playwright-traces ]; then
+            cp -rf /tmp/playwright-traces artifacts/playwright-traces
+          fi
+          find artifacts -maxdepth 3 -type f -printf '%p %k KB\n' 2>/dev/null | sort || true
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reels-hunter-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload downloaded reels left on disk
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reels-hunter-videos-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/reels_downloads/
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Save persistent history database
+        if: ${{ always() && hashFiles('history.db') != '' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            history.db
+            history.db-wal
+            history.db-shm
+          key: reels-history-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+ | head -1 || true)"
+            fi
             [ -n "$URL" ] && break
             sleep 1
           done
