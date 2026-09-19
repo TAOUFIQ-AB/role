@@ -143,6 +143,7 @@ class ReelCollector:
     def __init__(self, browser: BrowserManager):
         self.log = logging.getLogger("ReelCollector")
         self._bm = browser
+        self.discovery_metadata: Dict[str, Dict[str, object]] = {}
 
     @property
     def _page(self) -> Page:
@@ -1512,6 +1513,14 @@ class ReelCollector:
             except Exception:
                 pass
 
+        self.discovery_metadata = {
+            record["url"]: {
+                "score": float(record.get("rank_score") or 0.0),
+                "queries": sorted(record.get("queries") or []),
+                "evidence": str(record.get("evidence") or ""),
+            }
+            for record in selected
+        }
         return [record["url"] for record in selected]
 
 
