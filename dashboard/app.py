@@ -431,11 +431,48 @@ def decision(item_id: int):
     choice = str(body.get("decision", "")).strip().lower()
     if choice not in {"approved", "rejected", "pending"}:
         return jsonify({"error": "invalid decision"}), 400
+
     conn = db()
+    row = conn.execute(
+        "SELECT reel_id,reel_url FROM reviews WHERE id=?",
+        (item_id,),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "item not found"}), 404
+
     conn.execute(
         "UPDATE reviews SET review_status=?, updated_at=? WHERE id=?",
         (choice, now_iso(), item_id),
     )
+
+    # Approval is an executable control action: the current/next hunter will
+    # re-open the approved reel and deliver it while bypassing AI/thresholds.
+    if choice == "approved":
+        payload = {
+            "reel_id": row["reel_id"],
+            "reel_url": row["reel_url"],
+        }
+        conn.execute(
+            "INSERT INTO commands(command,payload,status,created_at) VALUES(?,?,?,?)",
+            ("approve", json.dumps(payload), "queued", now_iso()),
+        )
+    elif choice == "rejected":
+        # Cancel approval commands that have not yet been picked up.
+        queued = conn.execute(
+            "SELECT id,payload FROM commands WHERE command='approve' AND status='queued'"
+        ).fetchall()
+        for cmd in queued:
+            try:
+                payload = json.loads(cmd["payload"] or "{}")
+            except Exception:
+                payload = {}
+            if str(payload.get("reel_id") or "") == row["reel_id"]:
+                conn.execute(
+                    "UPDATE commands SET status='cancelled' WHERE id=?",
+                    (cmd["id"],),
+                )
+
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "decision": choice})
