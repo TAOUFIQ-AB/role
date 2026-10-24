@@ -1,6 +1,6 @@
 # Reels AI Hunter — reproducible local/container runtime.
 # Keep this image tag aligned with the pinned playwright package in requirements.txt.
-FROM mcr.microsoft.com/playwright/python:v1.63.0-noble
+FROM mcr.microsoft.com/playwright/python:v1.64.1-noble
 
 LABEL org.opencontainers.image.title="Reels AI Hunter"
 LABEL org.opencontainers.image.description="Instagram Reels collector/evaluator with optional Xpra HTML5 desktop"
